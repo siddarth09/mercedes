@@ -58,22 +58,22 @@ class TTC(Node):
         forward_ranges = np.clip(self.laser_ranges, 0.001, np.inf)
         forward_angles = self.laser_angles
 
-        # Compute relative speed
+      
         relative_speeds = self.current_speed * np.cos(forward_angles)
         relative_speeds = np.clip(relative_speeds, 0.001, np.inf)
 
-        # Compute TTC
+      
         ttc = forward_ranges / relative_speeds
         min_ttc = np.min(ttc)
 
-        # Output decision
+        
         cmd = Twist()
         if min_ttc < self.ttc_threshold:
             self.get_logger().warn(f' EMERGENCY BRAKING! TTC = {min_ttc:.2f} sec')
             cmd.linear.x = 0.0
             cmd.angular.z = 0.0
         else:
-            cmd = self.speed_cmd  # Let teleop drive normally
+            cmd = self.speed_cmd  
 
         self.cmd_pub.publish(cmd)
 

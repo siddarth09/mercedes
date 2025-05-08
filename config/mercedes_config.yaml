@@ -1,0 +1,9 @@
+pid_controller:
+  ros__parameters:
+    desired_distance: 1.2     # How far you want to stay from the wall
+    lookahead: 1.0            # Lookahead distance for projection
+    theta_deg: 45.0           # Angle between beams (degrees)
+    Kd: 0.09
+    Ki: 0.4
+    Kp: 0.9
+

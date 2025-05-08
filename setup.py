@@ -1,4 +1,7 @@
 from setuptools import find_packages, setup
+import os 
+from glob import glob
+from ament_index_python.packages import get_package_share_directory
 
 package_name = 'mercedes'
 
@@ -10,17 +13,25 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*')),
+        (os.path.join('share', package_name, 'config'), glob('config/*'))
+        
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='siddarth',
     maintainer_email='siddarth.dayasagar@gmail.com',
-    description='TODO: Package description',
-    license='TODO: License declaration',
+    description='Northeastern University - Mercedes-F1/10 Project',
+    license='MIT',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
             'aeb = mercedes.ttc:main',
+            'teleop = mercedes.teleop_node:main',
+            'pid = mercedes.pid_:main', 
+            'gui = mercedes.slider_gui:main',
+            
         ],
     },
+   
 )
