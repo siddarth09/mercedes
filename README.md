@@ -117,7 +117,7 @@ ros2 run mercedes pure_pursuit --ros-args -p Kdd:=3.0 -p min_ld:=0.3 -p max_ld:=
 ## 🧠 Authors
 
 * Siddarth Dayasagar
-* Team F1/10 Mercedes
+
 
 ---
 
