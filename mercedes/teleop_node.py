@@ -6,7 +6,7 @@ import select
 import termios
 import tty
 import numpy as np
-
+import os
 class TeleopAckermann(Node):
     def __init__(self):
         super().__init__('teleop_ackermann')
@@ -20,10 +20,14 @@ class TeleopAckermann(Node):
         self.max_speed = 3.0
         self.max_steering = 0.4189
 
-        # Terminal settings
-        self.settings = termios.tcgetattr(sys.stdin)
+        if os.isatty(sys.stdin.fileno()):
+            self.settings = termios.tcgetattr(sys.stdin)
+        else:
+            print("Not a TTY. Disabling interactive control.")
+            self.settings = None
 
-        self.get_logger().info("Use W/S to increase/decrease speed, A/D to steer, S to stop. Ctrl+C to exit cleanly.")
+
+        self.get_logger().info("Use W/X to increase/decrease speed, A/D to steer, S to stop. Ctrl+C to exit cleanly.")
 
         self.timer = self.create_timer(0.1, self.send_cmd)
 

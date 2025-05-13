@@ -30,6 +30,10 @@ setup(
             'teleop = mercedes.teleop_node:main',
             'pid = mercedes.pid_:main', 
             'gui = mercedes.slider_gui:main',
+            'waypoint_logger = mercedes.waypoint_storage:main',
+            'trajectory_generator = mercedes.traj_gene:main',
+            'pure_pursuit = mercedes.pure_pursuit:main',
+            
             
         ],
     },

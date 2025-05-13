@@ -14,8 +14,8 @@ def generate_launch_description():
         # AEB (Automatic Emergency Braking) Node
         Node(
             package='mercedes',  
-            executable='aeb',            
-            name='aeb_node',
+            executable='waypoint_logger',            
+            name='waypoint_logger',
             output='screen'
         ),
     ])
