@@ -33,6 +33,7 @@ setup(
             'waypoint_logger = mercedes.waypoint_storage:main',
             'trajectory_generator = mercedes.traj_gene:main',
             'pure_pursuit = mercedes.pure_pursuit:main',
+            'dynamic_trajectory= MMPC.dynamic_trajectory:main',
             
             
         ],

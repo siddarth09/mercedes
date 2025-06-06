@@ -23,7 +23,7 @@ class PurePursuit(Node):
         self.max_ld = self.get_parameter('max_ld').value
         self.max_steering_angle = self.get_parameter('max_steering_angle').value
         self.wheel_base = self.get_parameter('wheel_base').value
-        self.speed = 1.0
+        self.speed = 0.5
         self.goal_threshold = 0.3  
 
         self.path = []
@@ -31,7 +31,7 @@ class PurePursuit(Node):
         self.goal_reached = False
 
         self.path_sub = self.create_subscription(Path, '/reference_trajectory', self.path_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odometry/filtered', self.pose_callback, 10)
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.pose_callback, 10)
         self.ackermann_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
 
         self.get_logger().info('Pure Pursuit initialized (with dynamic lookahead + α steering)')
