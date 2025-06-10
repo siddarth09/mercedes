@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-import rclpy 
+import rclpy
 from rclpy.node import Node
-import numpy as np 
-from geometry_msgs.msg import PoseStamped 
-from nav_msgs.msg import Path, Odometry
+import numpy as np
+import pandas as pd
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from ackermann_msgs.msg import AckermannDriveStamped
 import tf_transformations
+import os
+
 
 class PurePursuit(Node):
     def __init__(self):
-        super().__init__('pure_pursuit')
+        super().__init__('pure_pursuit_csv')
 
         # Parameters
         self.declare_parameter('Kdd', 1.0)
@@ -17,6 +20,7 @@ class PurePursuit(Node):
         self.declare_parameter('max_ld', 2.0)
         self.declare_parameter('max_steering_angle', 0.6)
         self.declare_parameter('wheel_base', 0.325)
+        self.declare_parameter('csv_path', '/home/siddarth/f1ws/src/mercedes/storage')
 
         self.Kdd = self.get_parameter('Kdd').value
         self.min_ld = self.get_parameter('min_ld').value
@@ -24,41 +28,48 @@ class PurePursuit(Node):
         self.max_steering_angle = self.get_parameter('max_steering_angle').value
         self.wheel_base = self.get_parameter('wheel_base').value
         self.speed = 0.5
-        self.goal_threshold = 0.3  
-
-        self.path = []
+        self.goal_threshold = 0.3
         self.last_goal_index = -1
         self.goal_reached = False
 
-        self.path_sub = self.create_subscription(Path, '/reference_trajectory', self.path_callback, 10)
+        # Load CSV
+        self.load_path_from_csv()
+
+        # Subscriptions
         self.odom_sub = self.create_subscription(Odometry, '/odom', self.pose_callback, 10)
+
+        # Publisher
         self.ackermann_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
 
-        self.get_logger().info('Pure Pursuit initialized (with dynamic lookahead + α steering)')
+        self.get_logger().info('Pure Pursuit CSV node initialized')
 
-    def path_callback(self, msg):
-        self.path = [(pose.pose.position.x, pose.pose.position.y) for pose in msg.poses]
-        self.goal_reached = False
-        self.get_logger().info(f"Path received with {len(self.path)} points")
+    def load_path_from_csv(self):
+        path = self.get_parameter('csv_path').value
+        csv_files = sorted([f for f in os.listdir(path) if f.endswith('.csv')])
+        if not csv_files:
+            self.get_logger().error("No CSV files found in directory.")
+            return
+
+        latest_csv = os.path.join(path, csv_files[-1])
+        self.get_logger().info(f"Loading CSV: {latest_csv}")
+        df = pd.read_csv(latest_csv, header=None, names=["x", "y", "z", "roll", "pitch", "yaw"])
+        self.path = list(zip(df["x"], df["y"]))
 
     def find_target_point(self, x, y, lookahead_distance):
         start_index = max(0, self.last_goal_index)
         for i in range(start_index, len(self.path)):
             px, py = self.path[i]
             distance = np.hypot(px - x, py - y)
-            self.get_logger().info(f"[DEBUG] Distance to pt {i}: {distance:.2f}")
             if distance >= lookahead_distance:
                 self.last_goal_index = i
+                self.get_logger().info(f"Distance to point {i}: {distance:.2f} m")
                 return px, py
-        # fallback to last point
         if self.path:
             return self.path[-1]
         return None, None
 
-
-
     def compute_steering_angle(self, x, y, yaw, speed):
-        ld = np.clip(self.Kdd * speed, self.min_ld, self.max_ld)
+        ld = 0.3
         goal_x, goal_y = self.find_target_point(x, y, ld)
 
         if goal_x is None or goal_y is None:
@@ -82,6 +93,7 @@ class PurePursuit(Node):
         return delta
 
     def pose_callback(self, msg):
+        self.get_logger().info("Received odom")
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
         q = msg.pose.pose.orientation
@@ -89,29 +101,31 @@ class PurePursuit(Node):
         _, _, yaw = tf_transformations.euler_from_quaternion(quat)
 
         if not self.path:
-            self.get_logger().warn("Waiting for path...")
+            self.get_logger().warn("Path is empty.")
             return
 
-        # Check if final goal reached
-        if not self.goal_reached:
-            goal_x, goal_y = self.path[-1]
-            distance_to_goal = np.hypot(goal_x - x, goal_y - y)
-            if distance_to_goal < self.goal_threshold:
-                self.get_logger().info(f" FINAL GOAL REACHED at ({goal_x:.2f}, {goal_y:.2f})")
+        goal_x, goal_y = self.path[-1]
+        distance_to_goal = np.hypot(goal_x - x, goal_y - y)
+        if distance_to_goal < self.goal_threshold:
+            if not self.goal_reached:
+                self.get_logger().info(f"FINAL GOAL REACHED at ({goal_x:.2f}, {goal_y:.2f})")
                 self.goal_reached = True
 
                 stop_cmd = AckermannDriveStamped()
                 stop_cmd.drive.speed = 0.0
                 stop_cmd.drive.steering_angle = 0.0
                 self.ackermann_pub.publish(stop_cmd)
-                return
+            return
 
         steering_angle = self.compute_steering_angle(x, y, yaw, self.speed)
 
         cmd = AckermannDriveStamped()
         cmd.drive.speed = self.speed
         cmd.drive.steering_angle = steering_angle
+        self.get_logger().info(f"Sending command → Speed: {cmd.drive.speed}, Steering: {cmd.drive.steering_angle}")
+
         self.ackermann_pub.publish(cmd)
+
 
 def main():
     rclpy.init()
@@ -119,6 +133,7 @@ def main():
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
