@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from tf_transformations import euler_from_quaternion
 from numpy.linalg import norm
 from time import gmtime, strftime
@@ -16,7 +17,7 @@ class WaypointsLogger(Node):
 
         # Create output directory and CSV file
         home = expanduser('~')
-        log_dir = "/home/siddarth/f1ws/src/mercedes/storage"
+        log_dir = "/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage"
         os.makedirs(log_dir, exist_ok=True)
         file_name = strftime('wp-%Y-%m-%d-%H-%M-%S.csv', gmtime())
         self.file_path = os.path.join(log_dir, file_name)
@@ -24,12 +25,7 @@ class WaypointsLogger(Node):
         self.get_logger().info(f'Saving waypoints to {self.file_path}')
 
         # Subscriber to odometry
-        self.subscriber = self.create_subscription(
-            Odometry,
-            '/odom',
-            self.save_waypoint,
-            10
-        )
+        self.amcl_pose_sub = self.create_subscription(PoseWithCovarianceStamped, '/amcl_pose', self.save_waypoint, 10)
 
         # Ensure file is closed on shutdown
         atexit.register(self.shutdown_hook)
@@ -40,15 +36,14 @@ class WaypointsLogger(Node):
         quat = [q.x, q.y, q.z, q.w]
         _, _, yaw = euler_from_quaternion(quat)
 
-        # Compute speed
-        v = msg.twist.twist.linear
-        speed = norm([v.x, v.y, v.z])
+        x = msg.pose.pose.position.x
+        y = msg.pose.pose.position.y
 
-        # Only log when moving forward
-        if v.x > 0.0:
-            self.get_logger().info(f"x={msg.pose.pose.position.x:.2f}, y={msg.pose.pose.position.y:.2f}, yaw={yaw:.2f}, speed={speed:.2f}")
-            self.file.write(f"{msg.pose.pose.position.x}, {msg.pose.pose.position.y}, {yaw}, {speed}\n")
-            self.file.flush()
+        # Log at every callback (no velocity info in amcl_pose)
+        self.get_logger().info(f"x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}")
+        self.file.write(f"{x}, {y}, {yaw}\n")
+        self.file.flush()
+
 
     def shutdown_hook(self):
         if not self.file.closed:
