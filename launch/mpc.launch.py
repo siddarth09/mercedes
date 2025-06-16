@@ -8,17 +8,17 @@ def generate_launch_description():
         Node(
             package='mercedes',
             executable='mpc',
-            name='mpc_node',
+            name='mpc_trajectory_tracker',
             output='screen',
             emulate_tty=True,
             parameters=[config_file],
         ),
-        # Node(
-        #     package='mercedes',
-        #     executable='trajectory_generator',
-        #     name='trajectory_generator_node',
-        #     output='screen',
-        #     emulate_tty=True,
-        #     parameters=[{'use_sim_time': True}]
-        # )
+        Node(
+            package='mercedes',
+            executable='dyanamic_trajectory',
+            name='dynamic_trajectory_publisher',
+            output='screen',
+            emulate_tty=True,
+            parameters=[{'use_sim_time': True}]
+        )
     ])

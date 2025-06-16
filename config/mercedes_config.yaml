@@ -35,20 +35,15 @@ ekf_filter_node:
     publish_tf: true
     publish_acceleration: false
 
-mpc_node:
+mpc_trajectory_tracker:
   ros__parameters:
-    N: 8
-    dt: 0.01
-    L: 0.34
+    N: 20
+    wheelbase: 0.34
+    State_Weight:     [5.0, 5.0, 0.5, 1.0]      # Strong position tracking, moderate heading, weak speed
+    Control_Weight:   [0.5, 1.0]                 # Light penalty on speed, moderate penalty on steering
+    Terminal_Weight:  [25.0, 25.0, 5.0, 1.0]      # Strong incentive to finish close to final waypoint
 
-    Q: [5.0, 5.0, 0.1, 1.5]
-    R : [0.1, 0.5]
-
-    Rd: [0.001, 0.01]
-    Qf: [5.0, 5.0, 0.1, 1.5]
-
-
-    MAX_STEER: 0.34
-    MAX_ACCEL: 1.0
-    MIN_SPEED: 0.2
-    MAX_SPEED: 3.0
+    v_min: 1.0
+    v_max: 4.0
+    delta_min: -0.5
+    delta_max: 0.5
