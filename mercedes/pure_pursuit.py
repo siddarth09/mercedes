@@ -102,8 +102,8 @@ class PurePursuit(Node):
         return delta
     
     def timer_callback(self):
-        try:
-            now = self.get_clock().now().to_msg()
+        
+        try: 
             # Lookup transform map → base_link
             transform = self.tf_buffer.lookup_transform(
             "map", "base_link", rclpy.time.Time(), rclpy.duration.Duration(seconds=0.5)

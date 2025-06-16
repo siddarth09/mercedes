@@ -1,87 +1,111 @@
-import rclpy 
-from rclpy.node import Node 
+#!/usr/bin/env python3
+import rclpy
+from rclpy.node import Node
+from rclpy.duration import Duration
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from ackermann_msgs.msg import AckermannDriveStamped
 import numpy as np
+import math
 
-class TTC(Node):
+class AEBNode(Node):
     def __init__(self):
         super().__init__('aeb_node')
 
-        # Parameters
-        self.ttc_threshold = 2.0  # seconds
-        self.min_angle = np.deg2rad(-30)
-        self.max_angle = np.deg2rad(30)
+        # ---- Parameters ----
+        self.ttc_threshold = 0.5        # seconds
+        self.min_angle = math.radians(-30)
+        self.max_angle = math.radians( 30)
+        self.brake_hold_duration = 0.2  # seconds
 
-        # Runtime variables
+        # ---- State ----
         self.current_speed = 0.0
-        self.speed_cmd = Twist()  # Default to zero cmd
-        self.laser_ranges = None
-        self.laser_angles = None
+        self.laser_angles  = None
+        self.laser_ranges  = None
+        self.brake_end_time = None
 
-        # Subscriptions
+        # ---- Subscriptions ----
         self.create_subscription(LaserScan, '/scan', self.lidar_callback, 10)
-        self.create_subscription(Twist, '/cmd_vel', self.speed_callback, 10)
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
 
-        # Publisher
-        self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        # ---- Publishers ----
+        self.cmd_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
+        self.forward_scan_pub = self.create_publisher(LaserScan, '/forward_scan', 10) # to visualize forward scans
 
-        # Timer to compute TTC periodically
-        self.timer = self.create_timer(0.1, self.compute_ttc)
+        # ---- Timer ----
+        self.create_timer(0.1, self.compute_ttc)
 
         self.get_logger().info('AEB node started')
 
-    def speed_callback(self, msg):
-        self.speed_cmd = msg
-        self.current_speed = msg.linear.x
-        # Optional debug log
-        # self.get_logger().info(f'Current speed: {self.current_speed:.2f} m/s')
+    def odom_callback(self, msg: Odometry):
+        vx = msg.twist.twist.linear.x
+        vy = msg.twist.twist.linear.y
+        
+        self.current_speed = math.hypot(vx, vy)
 
-    def lidar_callback(self, msg):
-        # Cache laser scan angles and ranges
+    def lidar_callback(self, msg: LaserScan):
+        
         angles = np.linspace(msg.angle_min, msg.angle_max, len(msg.ranges))
         ranges = np.array(msg.ranges)
 
-        # Filter forward sector
-        forward_indices = np.where((angles >= self.min_angle) & (angles <= self.max_angle))
-        if len(forward_indices[0]) == 0:
+        # keep only the forward-facing beams
+        mask = (angles >= self.min_angle) & (angles <= self.max_angle)
+        idx = np.where(mask)[0]
+        if idx.size == 0:
             self.laser_ranges = None
             return
 
-        self.laser_angles = angles[forward_indices]
-        self.laser_ranges = ranges[forward_indices]
+        self.laser_angles = angles[idx]
+        self.laser_ranges = ranges[idx]
+        self.publish_forward_scan(msg)
+
+    def publish_forward_scan(self, original: LaserScan):
+        fs = LaserScan()
+        fs.header          = original.header
+        fs.angle_min       = self.laser_angles[0]
+        fs.angle_max       = self.laser_angles[-1]
+        fs.angle_increment = (
+            self.laser_angles[1] - self.laser_angles[0]
+            if len(self.laser_angles) > 1 else 0.0)
+        fs.time_increment  = original.time_increment
+        fs.scan_time       = original.scan_time
+        fs.range_min       = original.range_min
+        fs.range_max       = original.range_max
+        fs.ranges          = self.laser_ranges.tolist()
+        self.forward_scan_pub.publish(fs)
 
     def compute_ttc(self):
-        if self.laser_ranges is None or self.speed_cmd is None:
+        now = self.get_clock().now()
+
+        # Need valid scan to compute TTC
+        if self.laser_ranges is None:
             return
 
-        forward_ranges = np.clip(self.laser_ranges, 0.001, np.inf)
-        forward_angles = self.laser_angles
+        # compute TTC per beam
+        fr = np.clip(self.laser_ranges, 1e-3, np.inf)
+        fa = self.laser_angles
+        rel_speeds = np.clip(self.current_speed * np.cos(fa), 1e-2, np.inf)
+        ttc_vals = fr / rel_speeds
+        min_ttc = float(np.min(ttc_vals))
 
-      
-        relative_speeds = self.current_speed * np.cos(forward_angles)
-        relative_speeds = np.clip(relative_speeds, 0.001, np.inf)
+        self.get_logger().info(f"TTC = {min_ttc:.2f}s")
 
-      
-        ttc = forward_ranges / relative_speeds
-        min_ttc = np.min(ttc)
-
-        
-        cmd = Twist()
+        # trigger brake if threshold exceeded
         if min_ttc < self.ttc_threshold:
-            self.get_logger().warn(f' EMERGENCY BRAKING! TTC = {min_ttc:.2f} sec')
-            cmd.linear.x = 0.0
-            cmd.angular.z = 0.0
-        else:
-            cmd = self.speed_cmd  
-
-        self.cmd_pub.publish(cmd)
+            self.get_logger().warn(f"*** EMERGENCY BRAKE for {self.brake_hold_duration}s (TTC = {min_ttc:.2f}) ***")
+            self.brake_end_time = now + Duration(seconds=self.brake_hold_duration)
+            brake = AckermannDriveStamped()
+            brake.drive.speed = 0.0
+            brake.drive.steering_angle = 0.0
+            self.cmd_pub.publish(brake)
+            
+        # else: do nothing (upstream /drive continues unchanged)
 
 def main(args=None):
     rclpy.init(args=args)
-    ttc_node = TTC()
-    rclpy.spin(ttc_node)
-    ttc_node.destroy_node()
+    node = AEBNode()
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
