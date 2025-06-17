@@ -59,7 +59,9 @@ class PurePursuit(Node):
 
         latest_csv = os.path.join(path, csv_files[-1])
         self.get_logger().info(f"Loading CSV: {latest_csv}")
-        df = pd.read_csv(latest_csv, header=None, names=["x", "y", "z", "roll", "pitch", "yaw"])
+        # df = pd.read_csv(latest_csv, header=None, names=["x", "y", "z", "roll", "pitch", "yaw"])
+        df = pd.read_csv(latest_csv)  # assumes your CSV has headers: x, y, z, roll, pitch, yaw
+
         self.path = list(zip(df["x"], df["y"]))
         self.get_logger().info(f"Loaded path length: {len(self.path)}")
 
@@ -78,7 +80,7 @@ class PurePursuit(Node):
         return None, None
 
     def compute_steering_angle(self, x, y, yaw, speed):
-        ld = 0.3
+        ld = 2.0
         goal_x, goal_y = self.find_target_point(x, y, ld)
 
         if goal_x is None or goal_y is None:

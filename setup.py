@@ -33,17 +33,9 @@ setup(
             'waypoint_logger = mercedes.waypoint_logger:main',
             'pure_pursuit = mercedes.pure_pursuit:main',
             'dynamic_trajectory= MMPC.dynamic_trajectory:main',
-<<<<<<< Updated upstream
-            'mpc= MMPC.mpc_tracker:main',
-            
-=======
             'reference_traj_gen=mercedes.reference_traj_gen:main',
-            'mpc_path_tracker=mercedes.mpc_path_tracker:main',
-
-            'aeb_sim = mercedes.sim.aeb:main',
-            'mpc_path_tracker_sim = mercedes.sim.mpc_path_tracker_sim:main',
-            'reference_traj_gen_sim = mercedes.sim.reference_traj_gen_sim:main',            
->>>>>>> Stashed changes
+            'mpc = MMPC.mpc_tracker:main',
+          
             
         ],
     },

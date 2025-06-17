@@ -38,13 +38,13 @@ class MPCTrajectoryTracker(Node):
     def __init__(self):
         super().__init__('mpc_trajectory_tracker')
         
-        self.declare_parameter('N', 15)
+        self.declare_parameter('N', 50)
         self.declare_parameter('wheelbase', 0.4)
         self.declare_parameter('State_Weight', [10.0, 10.0, 5.0, 1.0])
         self.declare_parameter('Control_Weight', [0.1, 0.1])
         self.declare_parameter('Terminal_Weight', [1.0, 1.0, 0.5, 1.0])
         self.declare_parameter('v_min', 0.5)
-        self.declare_parameter('v_max', 3.0)
+        self.declare_parameter('v_max', 1.5)
         self.declare_parameter('delta_min', -0.5)
         self.declare_parameter('delta_max', 0.5)
         
@@ -59,14 +59,14 @@ class MPCTrajectoryTracker(Node):
         self.R = diag(SX(self.get_parameter('Control_Weight').get_parameter_value().double_array_value))
         self.Q_terminal = diag(SX(self.get_parameter('Terminal_Weight').get_parameter_value().double_array_value))
         self.v_min = 0.5
-        self.v_max = 3.0
+        self.v_max = 1.0
         self.delta_min = -0.5
         self.delta_max = 0.5
 
         self.current_state = None
         self.ref_traj = []
 
-        self.create_subscription(Odometry, "/ego_racecar/odom", self.odom_callback, 10)
+        self.create_subscription(Odometry, "/odom", self.odom_callback, 10)
         self.create_subscription(Path, "/dynamic_trajectory", self.traj_callback, 10)
         self.drive_pub = self.create_publisher(AckermannDriveStamped, "/drive", 10)
 

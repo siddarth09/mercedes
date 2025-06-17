@@ -63,7 +63,7 @@ class DynamicTrajectoryPublisher(Node):
 
         try:
             now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform("map", "ego_racecar/base_link", now)
+            transform = self.tf_buffer.lookup_transform("map", "base_link", now)
 
             x = transform.transform.translation.x
             y = transform.transform.translation.y

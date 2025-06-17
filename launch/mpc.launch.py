@@ -3,7 +3,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    config_file = '/home/siddarth/f1ws/src/mercedes/config/mercedes_config.yaml'
+    config_file = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/config/mercedes_config.yaml'
     return LaunchDescription([
         Node(
             package='mercedes',
@@ -13,12 +13,12 @@ def generate_launch_description():
             emulate_tty=True,
             parameters=[config_file],
         ),
-        Node(
-            package='mercedes',
-            executable='dyanamic_trajectory',
-            name='dynamic_trajectory_publisher',
-            output='screen',
-            emulate_tty=True,
-            parameters=[{'use_sim_time': True}]
-        )
+        # Node(
+        #     package='mercedes',
+        #     executable='dyanamic_trajectory',
+        #     name='dynamic_trajectory_publisher',
+        #     output='screen',
+        #     emulate_tty=True,
+        #     parameters=[{'use_sim_time': True}]
+        # )
     ])
