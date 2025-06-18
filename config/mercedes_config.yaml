@@ -39,11 +39,11 @@ mpc_trajectory_tracker:
   ros__parameters:
     N: 20
     wheelbase: 0.34
-    State_Weight:     [5.0, 5.0, 0.5, 1.0]      # Strong position tracking, moderate heading, weak speed
+    State_Weight:     [10.0, 10.0, 1.5, 1.0]      # Strong position tracking, moderate heading, weak speed
     Control_Weight:   [0.5, 1.0]                 # Light penalty on speed, moderate penalty on steering
     Terminal_Weight:  [25.0, 25.0, 5.0, 1.0]      # Strong incentive to finish close to final waypoint
 
-    v_min: 0.5
-    v_max: 1.0
+    v_min: 1.0
+    v_max: 4.0
     delta_min: -0.5
     delta_max: 0.5
