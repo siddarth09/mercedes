@@ -35,6 +35,7 @@ setup(
             'dynamic_trajectory= MMPC.dynamic_trajectory:main',
             'reference_traj_gen=mercedes.reference_traj_gen:main',
             'mpc = MMPC.mpc_tracker:main',
+            'mpcc = MMPC.mpcc:main',
           
             
         ],

@@ -111,4 +111,158 @@ mpc_node:
 
 ---
 
+# 📘 MPCC Trajectory Tracker – Mathematical Formulation
+
+This node implements **Model Predictive Contouring Control (MPCC)** for an Ackermann-steered vehicle (e.g., F1TENTH car) using the **CasADi** optimization framework. The controller follows a dynamic reference trajectory by minimizing **contouring** and **lag** errors while respecting vehicle dynamics and input constraints.
+
+---
+
+##  1. State and Control Definitions
+
+### 🔹 Vehicle State Vector
+
+$$
+\mathbf{x}_k = \begin{bmatrix}
+x_k \\\\ y_k \\\\ \psi_k \\\\ v_k
+\end{bmatrix}
+$$
+
+Where:
+
+* $x_k, y_k$: Position at step $k$
+* $\psi_k$: Heading angle (yaw)
+* $v_k$: Longitudinal velocity
+
+---
+
+### 🔹 Control Input Vector
+
+$$
+\mathbf{u}_k = \begin{bmatrix}
+v_k^c \\\\ \delta_k
+\end{bmatrix}
+$$
+
+Where:
+
+* $v_k^c$: Commanded velocity
+* $\delta_k$: Steering angle
+
+---
+
+##  2. Vehicle Dynamics Model
+
+We use a **kinematic bicycle model**, discretized using forward Euler:
+
+$$
+\begin{aligned}
+x_{k+1} &= x_k + v_k^c \cdot \cos(\psi_k) \cdot \Delta t \\\\
+y_{k+1} &= y_k + v_k^c \cdot \sin(\psi_k) \cdot \Delta t \\\\
+\psi_{k+1} &= \psi_k + \frac{v_k^c}{L} \cdot \tan(\delta_k) \cdot \Delta t \\\\
+v_{k+1} &= v_k^c
+\end{aligned}
+$$
+
+Where:
+
+* $L$: Wheelbase of the vehicle
+* $\Delta t$: Time step
+
+This model is encoded in CasADi using:
+
+```python
+x_next = x + v_c * cos(psi) * dt
+y_next = y + v_c * sin(psi) * dt
+psi_next = psi + (v_c / L) * tan(delta) * dt
+v_next = v_c
+```
+
+---
+
+##  3. Contouring and Lag Error Formulation
+
+We track a reference trajectory point $(x_r, y_r, \psi_r)$ at each step and compute:
+
+### 🔹 Contouring Error (Lateral Deviation)
+
+$$
+e_c = -\sin(\psi_r)(x - x_r) + \cos(\psi_r)(y - y_r)
+$$
+
+### 🔹 Lag Error (Longitudinal Deviation)
+
+$$
+e_l = \cos(\psi_r)(x - x_r) + \sin(\psi_r)(y - y_r)
+$$
+
+These are derived by projecting the position error vector into the **local path frame**.
+
+---
+
+##  4. Cost Function
+
+The MPCC cost function penalizes:
+
+* Lateral deviation ($e_c$)
+* Longitudinal deviation ($e_l$)
+* Control effort ($\mathbf{u}$)
+
+$$
+J = \sum_{k=0}^{N-1} \left( q_c \cdot e_{c,k}^2 + q_l \cdot e_{l,k}^2 + \mathbf{u}_k^T R \mathbf{u}_k \right)
+$$
+
+Where:
+
+* $q_c$: Contouring error weight
+* $q_l$: Lag error weight
+* $R$: Input cost matrix
+
+---
+
+##  5. Constraints
+
+### 🔹 Dynamics Constraints:
+
+$$
+\mathbf{x}_{k+1} = f(\mathbf{x}_k, \mathbf{u}_k)
+$$
+
+### 🔹 State & Input Bounds:
+
+$$
+\begin{aligned}
+v_{\min} &\leq v_k \leq v_{\max} \\\\
+\delta_{\min} &\leq \delta_k \leq \delta_{\max}
+\end{aligned}
+$$
+
+Implemented as CasADi `lbx`, `ubx` vectors in the NLP.
+
+---
+
+##  6. Solver Setup
+
+The problem is solved using **CasADi’s `nlpsol` interface** with the IPOPT solver:
+
+```python
+solver = nlpsol('solver', 'ipopt', nlp, {
+    'ipopt.print_level': 0,
+    'print_time': 0,
+    'ipopt.tol': 1e-3,
+})
+```
+
+Initial guess and bounds are provided for all state and control variables.
+
+---
+
+##  7. Output
+
+The solver returns:
+
+* Optimal steering angle: $\delta_0^*$
+* Optimal speed: $v_0^*$
+
+These are sent to the `/drive` topic via `AckermannDriveStamped`.
+
 

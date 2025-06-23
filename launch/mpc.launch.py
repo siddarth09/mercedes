@@ -1,21 +1,28 @@
 from launch import LaunchDescription
 from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+import os
 
 
 def generate_launch_description():
-    config_file = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/config/mercedes_config.yaml'
+    # Dynamically get the path to the config file in the mercedes package
+    mercedes_pkg_path = get_package_share_directory('mercedes')
+    config_file = os.path.join(mercedes_pkg_path, 'config', 'mercedes_config.yaml')
+
     return LaunchDescription([
         Node(
             package='mercedes',
-            executable='mpc',
-            name='mpc_trajectory_tracker',
+            executable='mpcc',
+            name='mpcc_trajectory_tracker',
             output='screen',
             emulate_tty=True,
             parameters=[config_file],
         ),
+
+        
         # Node(
         #     package='mercedes',
-        #     executable='dyanamic_trajectory',
+        #     executable='dynamic_trajectory',
         #     name='dynamic_trajectory_publisher',
         #     output='screen',
         #     emulate_tty=True,

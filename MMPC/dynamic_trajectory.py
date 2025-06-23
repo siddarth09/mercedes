@@ -8,14 +8,12 @@ from scipy.ndimage import distance_transform_edt as distance_transform
 from tf2_ros import TransformException, Buffer, TransformListener
 import tf_transformations
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
-from casadi import atan, tan  
-
+from casadi import atan, tan
 
 class DynamicTrajectoryPublisher(Node):
     def __init__(self):
         super().__init__("dynamic_trajectory_publisher")
 
-        # QoS for map and trajectory
         qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -25,7 +23,6 @@ class DynamicTrajectoryPublisher(Node):
         self.map_sub = self.create_subscription(OccupancyGrid, "/map", self.map_callback, qos)
         self.trajectory_pub = self.create_publisher(Path, "/dynamic_trajectory", qos)
 
-        # Parameters
         self.declare_parameter('wheelbase', 0.34)
         self.declare_parameter('horizon_length', 30)
         self.declare_parameter('dt', 0.1)
@@ -40,13 +37,11 @@ class DynamicTrajectoryPublisher(Node):
 
         self.map_info = None
         self.occupancy_grid = None
-        self.safe_distance = 0.3  # meters
+        self.safe_distance = 0.5  # meters
 
-        # TF listener
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        # Main timer
         self.timer = self.create_timer(0.1, self.timer_callback)
 
     def map_callback(self, msg):
@@ -63,7 +58,7 @@ class DynamicTrajectoryPublisher(Node):
 
         try:
             now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform("map", "base_link", now)
+            transform = self.tf_buffer.lookup_transform("map", "ego_racecar/base_link", now)
 
             x = transform.transform.translation.x
             y = transform.transform.translation.y
@@ -72,19 +67,25 @@ class DynamicTrajectoryPublisher(Node):
 
             best_score = -np.inf
             best_traj = None
+            best_delta = 0.0
 
-            for delta in np.linspace(-self.theta_max, self.theta_max, 21):
+            for delta in np.linspace(-self.theta_max, self.theta_max, 40):
                 traj = self.simulate_rk4_trajectory(x, y, theta, delta)
                 score = self.score_trajectory(traj)
                 if score > best_score:
                     best_score = score
                     best_traj = traj
+                    best_delta = delta
 
             if best_traj and len(best_traj) > 0:
+                self.get_logger().info(f"Best delta: {np.round(best_delta, 3)} rad")
                 self.publish_path(best_traj)
 
         except TransformException as ex:
             self.get_logger().warn(f"TF transform failed: {ex}")
+
+    def wrap_angle(self, angle):
+        return (angle + np.pi) % (2 * np.pi) - np.pi
 
     def kinematic_model(self, state, delta):
         x, y, theta = state
@@ -102,6 +103,7 @@ class DynamicTrajectoryPublisher(Node):
             k3 = self.kinematic_model(state + 0.5 * self.dt * k2, delta)
             k4 = self.kinematic_model(state + self.dt * k3, delta)
             state += (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            state[2] = self.wrap_angle(state[2])  # prevent yaw drift
             trajectory.append(tuple(state))
         return trajectory
 
@@ -123,8 +125,16 @@ class DynamicTrajectoryPublisher(Node):
         if min_dist < self.safe_distance:
             return -np.inf
 
-        score -= 0.1 * self.curvature_cost(traj)
+        goal_reward = self.goal_attractor_score(traj)
+        score += goal_reward
+
+        score -= 0.5 * self.curvature_cost(traj)
         return score
+
+    def goal_attractor_score(self, traj):
+        goal = np.array([3.5, -4.5])  # change this to your actual goal
+        end = np.array([traj[-1][0], traj[-1][1]])
+        return -np.linalg.norm(end - goal)
 
     def curvature_cost(self, traj):
         yaws = [theta for _, _, theta in traj]
@@ -136,16 +146,19 @@ class DynamicTrajectoryPublisher(Node):
         path.header.frame_id = "map"
         path.header.stamp = self.get_clock().now().to_msg()
 
-        for x, y, _ in traj:
+        for x, y, theta in traj:
             pose = PoseStamped()
             pose.header = path.header
             pose.pose.position.x = x
             pose.pose.position.y = y
-            pose.pose.orientation.w = 1.0  # no rotation
+            q = tf_transformations.quaternion_from_euler(0, 0, theta)
+            pose.pose.orientation.x = q[0]
+            pose.pose.orientation.y = q[1]
+            pose.pose.orientation.z = q[2]
+            pose.pose.orientation.w = q[3]
             path.poses.append(pose)
 
         self.trajectory_pub.publish(path)
-       
 
 def main(args=None):
     rclpy.init(args=args)
