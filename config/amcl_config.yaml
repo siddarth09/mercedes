@@ -40,3 +40,4 @@ amcl:
     z_short: 0.05
     laser_frame_id: "ego_racecar/laser_model"
     scan_topic: scan
+    

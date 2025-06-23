@@ -34,3 +34,35 @@ ekf_filter_node:
 
     publish_tf: true
     publish_acceleration: false
+
+mpc_trajectory_tracker:
+  ros__parameters:
+    N: 25
+    wheelbase: 0.34
+    State_Weight:     [15.0, 15.0, 0.8, 1.0]      # Strong position tracking, moderate heading, weak speed
+    Control_Weight:   [1.5, 2.5]                 # Light penalty on speed, moderate penalty on steering
+    Terminal_Weight:  [25.0, 25.0, 10.0, 5.0]      # Strong incentive to finish close to final waypoint
+
+    v_min: 0.3
+    v_max: 1.0
+    delta_min: -0.34
+    delta_max: 0.34
+
+mpcc_trajectory_tracker:
+  ros__parameters:
+    N: 20
+    wheelbase: 0.34
+    base_frame: "ego_racecar/base_link"
+
+    # Contouring and lag error weights
+    q_c: 5.0        # Weight on contouring error (lateral deviation)
+    q_l: 10.0          # Weight on lag error (longitudinal progress)
+
+    # Control input penalty
+    R_weights: [0.2, 0.5]  # [velocity, steering] input penalties
+
+    # Bounds
+    v_min: 0.3
+    v_max: 2.5
+    delta_min: -0.34
+    delta_max: 0.34
