@@ -43,8 +43,8 @@ mpc_trajectory_tracker:
     Control_Weight:   [1.5, 2.5]                 # Light penalty on speed, moderate penalty on steering
     Terminal_Weight:  [25.0, 25.0, 10.0, 5.0]      # Strong incentive to finish close to final waypoint
 
-    v_min: 0.3
-    v_max: 1.0
+    v_min: -1.0
+    v_max: 1.5
     delta_min: -0.34
     delta_max: 0.34
 
@@ -52,7 +52,7 @@ mpcc_trajectory_tracker:
   ros__parameters:
     N: 20
     wheelbase: 0.34
-    base_frame: "ego_racecar/base_link"
+    base_frame: "base_link"
 
     # Contouring and lag error weights
     q_c: 5.0        # Weight on contouring error (lateral deviation)
@@ -63,6 +63,6 @@ mpcc_trajectory_tracker:
 
     # Bounds
     v_min: 0.3
-    v_max: 2.5
+    v_max: 1.5
     delta_min: -0.34
     delta_max: 0.34

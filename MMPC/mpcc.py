@@ -22,7 +22,7 @@ class MPCCTrajectoryTracker(Node):
         self.declare_parameter('q_l', 1.0)
         self.declare_parameter('R_weights', [0.1, 0.1])
         self.declare_parameter('v_min', 0.5)
-        self.declare_parameter('v_max', 3.0)
+        self.declare_parameter('v_max', 1.0)
         self.declare_parameter('delta_min', -0.5)
         self.declare_parameter('delta_max', 0.5)
         self.declare_parameter('base_frame', 'ego_racecar/base_link')
@@ -44,10 +44,10 @@ class MPCCTrajectoryTracker(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.map_frame = "map"
-        self.base_frame = "ego_racecar/base_link"
+        self.base_frame = "base_link"
 
         self.velocity = 0.0
-        self.create_subscription(Odometry, "/ego_racecar/odom", self.odom_callback, 10)
+        self.create_subscription(Odometry, "/odom", self.odom_callback, 10)
         self.create_subscription(Path, "/dynamic_trajectory", self.traj_callback, 10)
         self.drive_pub = self.create_publisher(AckermannDriveStamped, "/drive", 10)
 

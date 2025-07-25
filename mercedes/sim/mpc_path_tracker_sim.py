@@ -1,190 +1,260 @@
 #!/usr/bin/env python3
+import os, math, glob
+import numpy as np, pandas as pd, casadi as ca
 import rclpy
-from rclpy.node import Node
-import casadi as ca
-import numpy as np
-import pandas as pd
-from ackermann_msgs.msg import AckermannDriveStamped
-from nav_msgs.msg import Odometry
-import math
+import tf_transformations
 
-class NMPCPathTracker(Node):
+from rclpy.node import Node
+from nav_msgs.msg import Odometry
+from ackermann_msgs.msg import AckermannDriveStamped
+from tf2_ros import Buffer, TransformListener, TransformException
+from builtin_interfaces.msg import Time
+from tf_transformations import euler_from_quaternion
+from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
+from scipy.interpolate import CubicSpline
+from casadi import SX, vertcat, Function, nlpsol, diag, atan, tan, cos, sin
+
+# Loads discrete waypoints (x,y) from a CSV
+# Generates a smooth, continuous reference trajectory using arc-length-based cubic spline interpolation
+# Computes curvature to create a curvature-based velocity profile for speed adaptation in turns
+# Builds full reference: position (x, y), heading (phi), and velocity at each prediction step
+# Uses a Nonlinear Model Predictive Controller (NMPC) with a kinematic bicycle model for tracking
+# Solves the NMPC using multiple shooting and CasADi for real-time trajectory tracking
+
+class MPCTrajNode(Node):
+
     def __init__(self):
-        super().__init__('nmpc_path_tracker')
+        super().__init__('mpc_path_tracker_sim')
 
         # ─── ROS PARAMETERS ─────────────────────────────────
-        self.csv_path      = self.declare_parameter('csv_path',    '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/waypoints.csv').value
-        self.N             = self.declare_parameter('horizon',       30).value     # prediction horizon
-        self.dt            = self.declare_parameter('dt',           0.1).value     # timestep
-        self.L             = self.declare_parameter('wheelbase',  0.335).value    # vehicle wheelbase
-        self.v_max         = self.declare_parameter('v_max',        3.0).value    # max speed
-        self.delta_max     = self.declare_parameter('steer_max',   0.34).value    # max steering angle (rad)
-        self.Q_xy          = self.declare_parameter('Q_xy',         1.0).value    # position tracking cost
-        self.R_v           = self.declare_parameter('R_v',         0.01).value  # speed cost
-        self.R_delta       = self.declare_parameter('R_delta',     0.01).value    # steering cost
-        self.R_acc         = self.declare_parameter('R_acc',        0.1).value    # acceleration rate cost
-        self.R_steer_rate  = self.declare_parameter('R_steer_rate', 0.1).value    # steering rate cost
-        # ────────────────────────────────────────────────────
+        self.declare_parameter('N', 15)           # Horizon                        
+        self.declare_parameter('wheelbase', 0.34)
+        self.declare_parameter('dt', 0.05)        # Time step
+        self.declare_parameter('Lr', 0.11)        # Distance from vehicle COG to rear axle
 
-        # Load and optionally subsample waypoints (map‐frame x,y)
-        df = pd.read_csv(self.csv_path)
-        self.wp = df[['x','y']].to_numpy()
-        self.wp = self.wp[::5] # subsample
+        self.declare_parameter('State_Weight', [10.0, 10.0, 5.0, 1.0])
+        self.declare_parameter('Control_Weight', [0.1, 0.1])
+        self.declare_parameter('Terminal_Weight', [1.0, 1.0, 0.5, 1.0])
 
-        # Robot pose holder
-        self.x0 = None
-        self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_cb, 10)
+        self.declare_parameter('v_min', 0.5)
+        self.declare_parameter('v_max', 3.0)
+        self.declare_parameter('delta_min', -0.5)
+        self.declare_parameter('delta_max', 0.5)
 
-        # Ackermann publisher
-        self.pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
+        # ─── Load Parameters ─────────────────────────────────
+        self.N = self.get_parameter('N').get_parameter_value().integer_value
+        self.dt = self.get_parameter('dt').get_parameter_value().double_value
+        self.L = self.get_parameter('wheelbase').get_parameter_value().double_value
+        self.Lr = self.get_parameter('Lr').get_parameter_value().double_value
 
-        # Build the CasADi NLP solver once
-        self._build_solver()
+        self.Q = diag(SX(self.get_parameter('State_Weight').get_parameter_value().double_array_value))
+        self.R = diag(SX(self.get_parameter('Control_Weight').get_parameter_value().double_array_value))
+        self.Q_terminal = diag(SX(self.get_parameter('Terminal_Weight').get_parameter_value().double_array_value))
 
-        # Timer driving the control loop at dt
-        self.create_timer(self.dt, self.control_loop)
+        self.v_min = self.get_parameter('v_min').get_parameter_value().double_value
+        self.v_max = self.get_parameter('v_max').get_parameter_value().double_value
+        self.delta_min = self.get_parameter('delta_min').get_parameter_value().double_value
+        self.delta_max = self.get_parameter('delta_max').get_parameter_value().double_value
 
-    def odom_cb(self, msg: Odometry):
-        """Cache current robot pose in map frame."""
-        p = msg.pose.pose.position
-        q = msg.pose.pose.orientation
-        yaw = math.atan2(
-            2*(q.w*q.z + q.x*q.y),
-            1 - 2*(q.y*q.y + q.z*q.z)
-        )
-        self.x0 = np.array([p.x, p.y, yaw])
+        # Subscriptions
+        self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_callback, 10)
+        # Publishers
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
 
-    def _build_solver(self):
-        """Constructs the CasADi NLP for the full nonlinear MPC with rate costs."""
-        N, dt, L = self.N, self.dt, self.L
-        Q, Rv, Rδ = self.Q_xy, self.R_v, self.R_delta
-        Racc, Rsr = self.R_acc, self.R_steer_rate
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.create_timer(self.dt, self.timer_callback)
 
-        # Decision variables
-        X = ca.SX.sym('X', 3, N+1)   # states: x, y, theta
-        U = ca.SX.sym('U', 2, N)     # controls: v, delta
-        P = ca.SX.sym('P', 3 + 2*N)  # parameters: init state + refs
+        self.base_frame = 'base_link'
+        self.map_frame = 'map'
+        self.current_state = None
+        self.current_vel = None
 
-        obj = 0
-        g   = []
+        self.get_logger().info('Path tracking MPC started')
 
-        # initial condition constraint
-        g.append(X[:,0] - P[0:3])
+    def odom_callback(self, msg : Odometry):
+        self.current_vel = msg.twist.twist.linear.x
 
-        for k in range(N):
-            # states and controls at step k
-            st      = X[:,k]
-            v_k     = U[0,k]
-            delta_k = U[1,k]
-            # reference waypoint at step k
-            x_ref = P[3 + 2*k]
-            y_ref = P[3 + 2*k + 1]
+    def update_state_from_tf(self):
+        try:
+            t = self.tf_buffer.lookup_transform(self.map_frame, self.base_frame, Time())
+            trans = t.transform.translation
+            rot = t.transform.rotation
+            _, _, yaw = euler_from_quaternion([rot.x, rot.y, rot.z, rot.w])
+            self.current_state = np.array([trans.x, trans.y, yaw, self.current_vel])
+        except (LookupException, ConnectivityException, ExtrapolationException) as e:
+            self.get_logger().warn(f"TF Lookup failed: {e}")
 
-            # tracking cost
-            obj += Q * ((st[0]-x_ref)**2 + (st[1]-y_ref)**2)
-            # control effort cost
-            obj += Rv * v_k**2 + Rδ * delta_k**2
+    def get_latest_csv(self):
+        path = self.get_parameter('csv_path').value
+        csv_files = sorted([f for f in os.listdir(path) if f.endswith('.csv')])
+        if not csv_files:
+            self.get_logger().error("No CSV files found in directory.")
+            return
+        
+        latest_csv = os.path.join(path,csv_files[-1])
+        # latest_csv = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/waypoints.csv'
+        self.get_logger().info(f"Loading CSV: {latest_csv}")
+        self.csv = pd.read_csv(latest_csv)
 
-            # rate-of-change costs
-            if k > 0:
-                v_prev     = U[0,k-1]
-                delta_prev = U[1,k-1]
-                obj += Racc * (v_k - v_prev)**2
-                obj += Rsr  * (delta_k - delta_prev)**2
-
-            # model dynamics: kinematic bicycle
-            st_next = X[:,k+1]
-            f = ca.vertcat(
-                st[0] + v_k * ca.cos(st[2]) * dt,
-                st[1] + v_k * ca.sin(st[2]) * dt,
-                st[2] + v_k/L * ca.tan(delta_k) * dt
-            )
-            g.append(st_next - f)
-
-        # flatten decision vars and constraints
-        OPT = ca.vertcat(ca.reshape(X, -1,1), ca.reshape(U, -1,1))
-        G   = ca.vertcat(*g)
-
-        # NLP definition
-        nlp = {'x': OPT, 'f': obj, 'g': G, 'p': P}
-        opts = {'ipopt.print_level': 0, 'print_time': 0}
-        self.solver = ca.nlpsol('solver', 'ipopt', nlp, opts)
-
-        # bounds for equality constraints
-        n_con = G.size()[0]
-        self.lbg = np.zeros(n_con)
-        self.ubg = np.zeros(n_con)
-
-        # variable bounds
-        lbx, ubx = [], []
-        # states: no bounds
-        for _ in range(N+1):
-            lbx += [-ca.inf, -ca.inf, -ca.inf]
-            ubx += [ ca.inf,  ca.inf,  ca.inf]
-        # controls: 0 ≤ v ≤ v_max, -delta_max ≤ delta ≤ delta_max
-        for _ in range(N):
-            lbx += [0.0,            -self.delta_max]
-            ubx += [self.v_max,     self.delta_max]
-
-        self.lbx = np.array(lbx)
-        self.ubx = np.array(ubx)
-
-        # placeholders for parameters & warm-start
-        self.init_p    = np.zeros(3 + 2*N)
-        self.init_xopt = np.zeros(((N+1)*3 + N*2))
-
-        self.get_logger().info(f"Nonlinear MPC solver built (horizon={N})")
-
-    def control_loop(self):
-        """Every dt: update parameters, solve MPC, publish first control."""
-        if self.x0 is None:
+    def get_ref_traj(self):
+        if not hasattr(self, 'csv'):
+            self.get_logger().error("CSV file not loaded.")
             return
 
-        # nearest waypoint index
-        dists = np.linalg.norm(self.wp - self.x0[:2], axis=1)
-        idx   = int(np.argmin(dists))
+        x = self.csv['x'].to_numpy()
+        y = self.csv['y'].to_numpy()
 
-        # pack parameters: [x0,y0,theta0, x_ref0,y_ref0, ...]
-        p_val = np.zeros_like(self.init_p)
-        p_val[0:3] = self.x0
+        # Compute arc length
+        ds = np.hypot(np.diff(x), np.diff(y))
+        s = np.concatenate(([0], np.cumsum(ds)))
+
+        # Compute heading (yaw)
+        dy, dx = np.diff(y), np.diff(x)
+        yaw = np.arctan2(dy, dx)
+        yaw = np.append(yaw, yaw[-1])
+
+        # Build cubic spline interpolators
+        self.x_of_s = CubicSpline(s, x)
+        self.y_of_s = CubicSpline(s, y)
+        self.yaw_of_s = CubicSpline(s, np.unwrap(yaw))
+
+        # Compute curvature κ(s)
+        dx_ds = self.x_of_s.derivative()(s)
+        dy_ds = self.y_of_s.derivative()(s)
+        d2x_ds2 = self.x_of_s.derivative(nu=2)(s)
+        d2y_ds2 = self.y_of_s.derivative(nu=2)(s)
+
+        curvature = np.abs(dx_ds * d2y_ds2 - dy_ds * d2x_ds2) / ((dx_ds ** 2 + dy_ds ** 2) ** 1.5 + 1e-6)
+
+        # Build curvature interpolator
+        self.kappa_of_s = CubicSpline(s, curvature)
+
+        # Curvature-based velocity profile
+        a_lat_max = 2.0  # max lateral acceleration (tunable)
+        v_profile = np.minimum(self.v_max, np.sqrt(a_lat_max / (curvature + 1e-6)))
+        self.v_of_s = CubicSpline(s, v_profile)
+
+        # Project current position onto path
+        Sgrid = np.linspace(0, s[-1], 1000)
+        path_pts = np.vstack((self.x_of_s(Sgrid), self.y_of_s(Sgrid))).T
+        idx = int(np.argmin(np.linalg.norm(path_pts - self.current_state[:2], axis=1)))
+        s0 = Sgrid[idx]
+
+        # Build reference trajectory using recursive s_k
+        ref_traj = []
+        s_k = s0
         for k in range(self.N):
-            i = min(idx + k, len(self.wp)-1)
-            p_val[3 + 2*k]   = self.wp[i,0]
-            p_val[3 + 2*k+1] = self.wp[i,1]
+            v_ref_k = float(self.v_of_s(s_k))
+            s_k = min(s_k + v_ref_k * self.dt, s[-1])
+            ref_traj.append([
+                float(self.x_of_s(s_k)),
+                float(self.y_of_s(s_k)),
+                float(self.yaw_of_s(s_k)),
+                v_ref_k
+            ])
 
-        # solve NLP
-        sol = self.solver(
-            x0=self.init_xopt,
-            p = p_val,
-            lbg=self.lbg, ubg=self.ubg,
-            lbx=self.lbx, ubx=self.ubx
-        )
+        self.ref_traj = ref_traj
 
-        xopt = sol['x'].full().flatten()
-        self.init_xopt = xopt  # warm start
+    def timer_callback(self):
 
-        # extract first control
-        offset = (self.N+1)*3
-        v0     = float(xopt[offset])
-        delta0 = float(xopt[offset+1])
+        self.update_state_from_tf()
+        if self.current_state is None:
+            return
+        
+        x = SX.sym('x')
+        y = SX.sym('y')
+        phi = SX.sym('phi')
+        v_s = SX.sym('v_s')
+        x_state = SX.sym(x, y, phi, v_s)
 
-        # self.get_logger().info(f"v0={v0:.2f}, delta0={math.degrees(delta0):.1f}°")
+        v_c = SX.sym('v_c')
+        delta = SX.sym('delta')
+        u_ctrl = vertcat(v_c, delta)
 
-        # publish
-        msg = AckermannDriveStamped()
-        msg.drive.speed          = v0
-        msg.drive.steering_angle = delta0
-        self.pub.publish(msg)
+        beta = atan(self.Lr * tan(delta) / self.L)
+        x_next = x + v_c * cos(phi + beta) * self.dt
+        y_next = y + v_c * sin(phi + beta) * self.dt
+        phi_next = phi + (v_c * cos(beta) * tan(delta) / self.L) * self.dt
+        v_next = v_c
 
-    def destroy_node(self):
-        super().destroy_node()
+        next_state = vertcat(x_next, y_next, phi_next, v_next)
+        dynamics = Function('dynamics', [x_state, u_ctrl], [next_state])
+
+        X = [SX.sym(f'X_{k}', 4) for k in range(self.N + 1)]
+        U = [SX.sym(f'U_{k}', 2) for k in range(self.N)]
+
+        cost = 0
+        constraints = [X[0] - self.current_state[:4]]
+
+        for k in range(self.N):
+
+            x_ref, y_ref, phi_ref, vel_ref = self.ref_traj
+            ref_state = np.array([x_ref, y_ref, phi_ref, vel_ref])
+
+            cost += (X[k] - ref_state).T @ self.Q @ (X[k] - ref_state)
+            cost += U[k].T @ self.R @ U[k]
+
+            X_next = dynamics(X[k], U[k])
+            constraints.append(X[k+1] - X_next)
+
+        x_ref, y_ref, yaw_ref, vel_ref = self.ref_traj[-1]
+        terminal_ref = np.array([x_ref, y_ref, yaw_ref, vel_ref])
+        cost += (X[self.N] - terminal_ref).T @ self.Q_terminal @ (X[self.N] - terminal_ref)
+
+        z = vertcat(*X, *U)
+        g = vertcat(*constraints)
+
+        nlp = {'x':z, 'f':cost, 'g':g}
+        solver = nlpsol('solver', 'ipopt', nlp, {
+            'ipopt.print_level': 0,
+            'print_time': 0,
+            'ipopt.tol': 1e-3,
+        })
+
+        lbx = []
+        ubx = []
+
+        for _ in range(self.N+1):
+            lbx += [-np.inf, -np.inf, -np.inf, self.v_min]
+            ubx += [np.inf, np.inf, np.inf, self.v_max]
+        for _ in range(self.K):
+            lbx += [self.v_min, self.delta_min]
+            ubx += [self.v_max, self.delta_max]
+
+        lbg = [0.0] * ((self.N + 1) * 4)
+        ubg = [0.0] * ((self.N + 1) * 4)
+
+        x0 = [*self.current_state[:4]] * (self.N + 1) + [0.5, 0.0] * self.N
+
+        try:
+            sol = solver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+            z_opt = sol['x'].full().flatten()
+            steer = float(z_opt[4 * (self.N + 1) + 1])
+            speed = float(z_opt[4 * (self.N + 1)])
+
+            msg = AckermannDriveStamped()
+            msg.drive.steering_angle = steer
+            msg.drive.speed = speed
+
+            self.drive_pub.publish(msg)
+            self.get_logger().info(f"Published control: speed={speed}, steer={steer}")
+
+        except Exception as e:
+            self.get_logger().warn(f"MPC Solver failed: {e}")
+
 
 def main(args=None):
     rclpy.init(args=args)
-    node = NMPCPathTracker()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    node = MPCTrajNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()

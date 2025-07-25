@@ -36,8 +36,12 @@ setup(
             'reference_traj_gen=mercedes.reference_traj_gen:main',
             'mpc = MMPC.mpc_tracker:main',
             'mpcc = MMPC.mpcc:main',
+            'mpc_traj_tracker = mercedes.mpc_traj_tracker:main',
           
-            
+            'reference_traj_gen_sim=mercedes.sim.reference_traj_gen_sim:main',
+            'mpc_path_tracker_sim = mercedes.sim.mpc_path_tracker_sim:main',
+            'mppi_sim = mercedes.sim.mppi_sim:main',
+
         ],
     },
    
