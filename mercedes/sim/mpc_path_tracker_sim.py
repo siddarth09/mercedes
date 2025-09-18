@@ -218,7 +218,7 @@ class MPCTrajNode(Node):
         for _ in range(self.N+1):
             lbx += [-np.inf, -np.inf, -np.inf, self.v_min]
             ubx += [np.inf, np.inf, np.inf, self.v_max]
-        for _ in range(self.K):
+        for _ in range(self.N):
             lbx += [self.v_min, self.delta_min]
             ubx += [self.v_max, self.delta_max]
 
