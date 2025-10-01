@@ -12,20 +12,18 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='mercedes',
-            executable='mpcc',
-            name='mpcc_trajectory_tracker',
+            executable='mpcc_centerline',
+            name='mpc_centerline',
             output='screen',
             emulate_tty=True,
             parameters=[config_file],
         ),
 
-        
-        # Node(
-        #     package='mercedes',
-        #     executable='dynamic_trajectory',
-        #     name='dynamic_trajectory_publisher',
-        #     output='screen',
-        #     emulate_tty=True,
-        #     parameters=[{'use_sim_time': True}]
-        # )
-    ])
+        Node(
+            package='mercedes',
+            executable='aeb',
+            name='aeb_node',
+            output='screen',
+            emulate_tty=True,
+        ),
+   ])

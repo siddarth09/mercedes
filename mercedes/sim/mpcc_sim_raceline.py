@@ -28,22 +28,22 @@ class MPCCNode(Node):
         self.declare_parameter('wheelbase', 0.36)
 
         # Weights for the cost function
-        self.declare_parameter('Q_norm', 1.2)
-        self.declare_parameter('Q_tang', 0.1)
-        self.declare_parameter('Q_psi', 0.5)
-        self.declare_parameter('R_acc', 0.1)
-        self.declare_parameter('R_delta', 1.0)
-        self.declare_parameter('Q_prog', 1.0)
-        self.declare_parameter('Q_norm_K', 1.0)
-        self.declare_parameter('Q_psi_K', 0.1)
+        self.declare_parameter('Q_norm', 5.0)
+        self.declare_parameter('Q_tang', 8.0)
+        self.declare_parameter('Q_psi', 2.0)
+        self.declare_parameter('R_acc', 1.2)
+        self.declare_parameter('R_delta', 10.0)
+        self.declare_parameter('Q_prog', 5.0)
+        self.declare_parameter('Q_norm_K', 10.0)
+        self.declare_parameter('Q_psi_K', 8.0)
 
         self.declare_parameter('v_min', 0.0)
-        self.declare_parameter('v_max', 1.0)
+        self.declare_parameter('v_max', 5.0)
 
         # Control input constraints
         self.declare_parameter('delta_min', -0.4)
         self.declare_parameter('delta_max', 0.4)
-        # self.declare_parameter('R_ddelta', 50.0) # steering rate (big)
+        self.declare_parameter('R_ddelta', 50.0) # steering rate (big)
 
         # Retrieve parameters
         self.dt = self.get_parameter('dt').get_parameter_value().double_value
@@ -63,8 +63,7 @@ class MPCCNode(Node):
         self.v_max = self.get_parameter('v_max').get_parameter_value().double_value
         self.delta_min = self.get_parameter('delta_min').get_parameter_value().double_value
         self.delta_max = self.get_parameter('delta_max').get_parameter_value().double_value
-
-        # self.R_ddelta = self.get_parameter('R_ddelta').get_parameter_value().double_value
+        self.R_ddelta = self.get_parameter('R_ddelta').get_parameter_value().double_value
 
         # Subscriptions
         self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_callback, 10)
@@ -101,7 +100,6 @@ class MPCCNode(Node):
         self.current_vel = math.hypot(x_vel, y_vel)
 
     def update_state_from_tf(self):
-
         try:
             t = self.tf_buffer.lookup_transform(self.map_frame, self.base_frame, Time())
             trans = t.transform.translation
@@ -112,7 +110,6 @@ class MPCCNode(Node):
             self.get_logger().warn(f"TF Lookup failed: {e}")
         
     def read_raceline_csv(self):
-
         df = pd.read_csv(self.raceline_path, 
                         delimiter=';', 
                         comment='#',   # This tells pandas to skip lines starting with #
@@ -296,7 +293,7 @@ class MPCCNode(Node):
             cost += self.Q_norm*e_norm_k**2 + self.Q_tang*e_tang_k**2 + self.Q_psi*e_psi_k**2
             cost += self.R_acc*v_k**2 + self.R_delta*delta_k**2  # Regularization
             cost += -self.Q_prog*s_dot_k # Reward progress
-            # cost += self.R_ddelta * ddel**2 #Steering rate penalty
+            cost += self.R_ddelta * ddel**2 #Steering rate penalty
 
             X_next = dynamics(Xk, Uk)
             constraints.append(X[k+1] - X_next)

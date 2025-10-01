@@ -206,6 +206,7 @@ class MPCCNode(Node):
 
         return e_norm, e_tang, e_psi, kap
 
+
     def timer_callback(self):
         # Get (x,y,yaw,v) 
         self.update_state_from_tf()
@@ -216,18 +217,18 @@ class MPCCNode(Node):
         x, y, psi, v = self.current_state
         
         s_est = nearest_s_xy(x, y, self.s_eval, self.x_func, self.y_func, is_closed=True)
-
         if s_est is None:
             self.get_logger().warn("Could not find nearest s! Skippins this tick")
             return
+        
+        self.ref_traj = get_ref_traj(s_est)
 
-        self.measured_state = np.array([x, y, psi, s_est, v])
+        self.measured_state = np.array([x, y, psi])
 
         x   = ca.SX.sym('x')
         y   = ca.SX.sym('y')
         psi = ca.SX.sym('psi')
-        s   = ca.SX.sym('s')
-        x_state = ca.vertcat(x, y, psi, s)
+        x_state = ca.vertcat(x, y, psi)
 
         u_ctrl  = ca.SX.sym('u_ctrl', 2)  # single 2x1 control vector symbol
         v_u, d_u = u_ctrl[0], u_ctrl[1]   # extract speed and steering    
@@ -236,17 +237,10 @@ class MPCCNode(Node):
         y_next = y + v_u*ca.sin(psi) * self.dt
         psi_next = psi + ((v_u*ca.tan(d_u))/self.wheelbase) * self.dt
         
-        e_norm, e_tang, e_psi, kap = self.get_errors(x, y, psi, s)
-        
-        eps = 1e-6
-        # s_dot = v_u * cos_epsi / (1.0 - kap*e_norm + eps)
-        s_dot   = v_u * ca.cos(e_psi) / (1.0 - kap * e_norm + eps)
-        s_next  = s + s_dot * self.dt
-
-        next_state = ca.vertcat(x_next, y_next, psi_next, s_next)
+        next_state = ca.vertcat(x_next, y_next, psi_next)
         dynamics = ca.Function('dynamics', [x_state, u_ctrl], [next_state])
 
-        X = [ca.SX.sym(f'X_{k}', 4) for k in range(self.N+1)]
+        X = [ca.SX.sym(f'X_{k}', 3) for k in range(self.N+1)]
         U = [ca.SX.sym(f'U_{k}', 2) for k in range(self.N)]
 
         cost = 0
@@ -254,7 +248,7 @@ class MPCCNode(Node):
         lbg = []
         ubg = []
 
-        constraints.append(X[0] - ca.DM(self.measured_state[:4]))
+        constraints.append(X[0] - ca.DM(self.measured_state[:3]))
         lbg += [0.0, 0.0, 0.0, 0.0]
         ubg += [0.0, 0.0, 0.0, 0.0]
         
@@ -266,7 +260,6 @@ class MPCCNode(Node):
             xk  = Xk[0]
             yk  = Xk[1]
             psik= Xk[2]
-            sk  = Xk[3]
 
             v_k     = Uk[0]
             delta_k = Uk[1]
@@ -276,23 +269,12 @@ class MPCCNode(Node):
                 delta_prev = U[k-1][1]
             ddel = delta_k - delta_prev
 
-            e_norm_k, e_tang_k, e_psi_k, kap_k = self.get_errors(xk, yk, psik, sk)
-
-            eps = 1e-6
-            tx_k = self.ca_splines['tx'](sk)
-            ty_k = self.ca_splines['ty'](sk)
-            den = 1.0 - kap_k * e_norm_k
-            den = ca.fmax(0.2, den)   # floor
-
-            s_dot_k = v_k * ca.cos(e_psi_k) / den
-            # s_dot_k = v_k * ca.cos(e_psi_k) / (1.0 - kap_k * e_norm_k + eps)
-            cos_epsi = tx_k*ca.cos(psik) + ty_k*ca.sin(psik)
-
+            x_err = xk - self.ca_splines['x']()
             # Stage cost
             cost += self.Q_norm*e_norm_k**2 + self.Q_tang*e_tang_k**2 # Contour errors
             # cost += + self.Q_psi*e_psi_k**2
             cost += self.R_vel*v_k**2 + self.R_delta*delta_k**2       # Regularization
-            cost += -self.Q_prog*s_dot_k                              # Reward progress
+            cost -= self.Q_prog*s_dot_k                              # Reward progress
             cost += self.R_ddelta * ddel**2                           # Steering rate penalty
             cost += self.Q_psi * (1.0 - cos_epsi)                     # bounded, smooth
             

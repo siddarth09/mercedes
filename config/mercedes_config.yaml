@@ -62,7 +62,30 @@ mpcc_trajectory_tracker:
     R_weights: [0.2, 0.5]  # [velocity, steering] input penalties
 
     # Bounds
-    v_min: 0.3
-    v_max: 1.5
+    v_min: 0.2
+    v_max: 0.8
     delta_min: -0.34
     delta_max: 0.34
+
+mpcc_centerline:
+  ros__parameters:
+
+    dt:  0.01
+    N:   50
+    wheelbase: 0.36
+    half_width:   0.8
+    safety_margin: 0.0
+
+    Q_norm:   5.0
+    Q_tang:   2.0
+    Q_psi:    1.0          
+    Q_prog:   50.0
+
+    R_vel:    0.8
+    R_delta:  5.0
+    R_ddelta: 10.0
+
+    v_min:    0.5
+    v_max:    2.0
+    delta_min: -0.4
+    delta_max:  0.4

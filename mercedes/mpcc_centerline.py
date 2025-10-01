@@ -13,8 +13,6 @@ from rclpy.time import Time
 from tf_transformations import euler_from_quaternion
 from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityException, ExtrapolationException
 from scipy.interpolate import CubicSpline
-from nav_msgs.msg import Path
-from geometry_msgs.msg import PoseStamped
 
 from casadi import SX, vertcat, Function, nlpsol, diag, atan, tan, cos, sin
 from ament_index_python.packages import get_package_share_directory
@@ -24,7 +22,7 @@ from mercedes.sim.curve import load_trajectory, create_smooth_spline, create_cas
 class MPCCNode(Node):
 
     def __init__(self):
-        super().__init__('mpcc_sim')
+        super().__init__('mpcc_centerline')
 
         # Parameters
         self.declare_parameter('dt', 0.01)
@@ -52,22 +50,22 @@ class MPCCNode(Node):
         # self.declare_parameter('R_ddelta', 100.0) # steering rate (big)
 
         # Weights for the cost function
-        self.declare_parameter('Q_norm', 1.0)
+        self.declare_parameter('Q_norm', 3.0)
         self.declare_parameter('Q_tang', 2.0)
-        self.declare_parameter('Q_psi', 3.0)
+        self.declare_parameter('Q_psi', 6.0)
         self.declare_parameter('R_vel', 0.5)
-        self.declare_parameter('R_delta', 8.0)
-        self.declare_parameter('Q_prog', 2.0)
-        self.declare_parameter('Q_norm_K', 1.0)
-        self.declare_parameter('Q_tang_K', 0.5)
-        self.declare_parameter('Q_psi_K', 3.0)
+        self.declare_parameter('R_delta', 0.5)
+        self.declare_parameter('Q_prog', 3.0)
+        self.declare_parameter('Q_norm_K', 2.0)
+        self.declare_parameter('Q_tang_K', 2.0)
+        self.declare_parameter('Q_psi_K', 6.0)
 
         # Control input constraints
-        self.declare_parameter('v_min', 0.5)
-        self.declare_parameter('v_max', 2.0)
+        self.declare_parameter('v_min', 0.3)
+        self.declare_parameter('v_max', 0.8)
         self.declare_parameter('delta_min', -0.4)
         self.declare_parameter('delta_max', 0.4)
-        self.declare_parameter('R_ddelta', 50.0) # steering rate (big)
+        self.declare_parameter('R_ddelta', 0.5) # steering rate (big)
 
         # Retrieve parameters
         self.dt = self.get_parameter('dt').get_parameter_value().double_value
@@ -93,22 +91,22 @@ class MPCCNode(Node):
         self.R_ddelta = self.get_parameter('R_ddelta').get_parameter_value().double_value
 
         # Subscriptions
-        self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_callback, 10)
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         # Publishers
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
-        self.s_curve_pub = self.create_publisher(Path, '/s_curve', 10)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
-        self.base_frame = 'ego_racecar/base_link'
+        self.base_frame = 'base_link'
         self.map_frame = 'map'
         self.current_state = None
         self.current_vel = 0.0
         self.last_delta = 0.0
 
         dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes'
-        self.centerline_path = os.path.join(dir, 'storage', 'racelines', 'Spielberg_centerline.csv')
+        # self.centerline_path = os.path.join(dir, 'storage', 'racelines', 'Spielberg_centerline.csv')
+        self.centerline_path = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/wp-2025-09-24-15-48-56.csv'
 
         self.create_timer(self.dt, self.timer_callback)
 
@@ -124,24 +122,8 @@ class MPCCNode(Node):
         if self.ca_splines is not None:
             self.get_logger().info("Casadi interpolants ready")
 
-        self.publish_smooth_curve(self.s_eval)
         self.s0 = self.s_eval[0]
         self.L = self.s_eval[-1]
-
-    def publish_smooth_curve(self, s_eval: list):
-        path = Path()
-        path.header.frame_id = 'map'
-
-        for s in s_eval:
-            ps = PoseStamped()
-            ps.header.frame_id = 'map'
-            ps.pose.position.x = self.x_func(s)
-            ps.pose.position.y = self.y_func(s)
-            ps.pose.position.z = 0.0
-            ps.pose.orientation.w = 1.0 
-            path.poses.append(ps)
-
-        self.s_curve_pub.publish(path)
 
     def odom_callback(self, msg : Odometry):
         x_vel = msg.twist.twist.linear.x
@@ -205,6 +187,7 @@ class MPCCNode(Node):
         kap = self.ca_splines['kappa_xy'](sw)  # or self.ca_splines['kappa'](sw)
 
         return e_norm, e_tang, e_psi, kap
+
 
     def timer_callback(self):
         # Get (x,y,yaw,v) 
@@ -334,13 +317,6 @@ class MPCCNode(Node):
             ubx += [self.v_max, self.delta_max]
 
         x0 = [*self.measured_state[:4]] * (self.N+1) + [0.5, 0.0] * (self.N)
-        # v_seed = min(max(self.current_vel, 0.8), self.v_max)
-        # x0 = []
-        # for k in range(self.N+1):
-        #     s_guess = s_est + k * self.dt * v_seed
-        #     x0 += [x, y, psi, s_guess]
-        # for k in range(self.N):
-        #     x0 += [v_seed, self.last_delta]
 
         nlp = {'x':z, 'f':cost, 'g':g}
         solver = nlpsol('solver', 'ipopt', nlp, {

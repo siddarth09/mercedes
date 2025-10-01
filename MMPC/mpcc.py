@@ -16,16 +16,16 @@ class MPCCTrajectoryTracker(Node):
     def __init__(self):
         super().__init__('mpcc_trajectory_tracker')
 
-        self.declare_parameter('N', 15)
+        self.declare_parameter('N', 30)
         self.declare_parameter('wheelbase', 0.34)
         self.declare_parameter('q_c', 20.0)
         self.declare_parameter('q_l', 1.0)
         self.declare_parameter('R_weights', [0.1, 0.1])
-        self.declare_parameter('v_min', 0.5)
-        self.declare_parameter('v_max', 1.0)
+        self.declare_parameter('v_min', 0.2)
+        self.declare_parameter('v_max', 0.5)
         self.declare_parameter('delta_min', -0.5)
         self.declare_parameter('delta_max', 0.5)
-        self.declare_parameter('base_frame', 'ego_racecar/base_link')
+        self.declare_parameter('base_frame', 'base_link')
         
         self.N = self.get_parameter('N').get_parameter_value().integer_value
         self.dt = 0.05
