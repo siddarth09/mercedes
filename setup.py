@@ -45,6 +45,7 @@ setup(
             'mpcc_sim_raceline = mercedes.sim.mpcc_sim_raceline:main',
             'mpcc_sim_centerline = mercedes.sim.mpcc_sim_centerline:main',
             'mppi_tracking_sim = mercedes.sim.mppi_tracking_sim:main',
+            'mppi = mercedes.mppi:main',
             
 
         ],

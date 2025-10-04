@@ -26,7 +26,7 @@ class MPPI(Node):
 
         # Vehicle parameters
         self.declare_parameter('L', 0.36)  # Vehicle wheelbase
-        self.declare_parameter('max_speed', 2.0)   # Maximum speed (m/s)
+        self.declare_parameter('max_speed', 1.0)   # Maximum speed (m/s)
         self.declare_parameter('min_speed', 0.3)   # Minimum speed (m/s)
         self.declare_parameter('max_steer', 0.4)   # Maximum steering angle (rad)
         self.declare_parameter('min_steer', -0.4)  # Minimum steering angle (rad)
@@ -39,10 +39,10 @@ class MPPI(Node):
         self.declare_parameter('safe_distance', 0.3)
         
         # Cost function weights
-        self.declare_parameter('w_collision', 20.0)           # Obstacle avoidance weight
-        self.declare_parameter('w_curvature', 1.5)           # Control smoothness weight
+        self.declare_parameter('w_collision', 500.0)           # Obstacle avoidance weight
+        self.declare_parameter('w_curvature', 0.1)           # Control smoothness weight
         self.declare_parameter('w_progress', 1.0)            # Forward progress weight
-        self.declare_parameter('w_steering_rate', 10.0)
+        self.declare_parameter('w_steering_rate', 1.0)
         self.declare_parameter('out_of_bounds_cost', 100.0) 
         self.declare_parameter('collision_cost', 20.0) 
         
@@ -278,8 +278,8 @@ class MPPI(Node):
         # + self.w_progress      * z_prog
         )
                 
-        Jmax = np.max(scores)
-        w = np.exp((scores - Jmax)/self.lambda_s)
+        # Jmax = np.max(scores)
+        w = np.exp((scores)/self.lambda_s)
         w_sum = np.sum(w) + 1e-12
 
         dU = np.tensordot(w, eps, axes=(0,0)) / w_sum
