@@ -1,7 +1,6 @@
 from setuptools import find_packages, setup
 import os 
 from glob import glob
-from ament_index_python.packages import get_package_share_directory
 
 package_name = 'mercedes'
 
@@ -36,8 +35,18 @@ setup(
             'reference_traj_gen=mercedes.reference_traj_gen:main',
             'mpc = MMPC.mpc_tracker:main',
             'mpcc = MMPC.mpcc:main',
+            'mpc_traj_tracker = mercedes.mpc_traj_tracker:main',
+            'mpcc_centerline = mercedes.mpcc_centerline:main',
           
+            'reference_traj_gen_sim=mercedes.sim.reference_traj_gen_sim:main',
+            'mpc_path_tracker_sim = mercedes.sim.mpc_path_tracker_sim:main',
+            'mppi_sim = mercedes.sim.mppi_sim:main',
+            'raceline_viz = mercedes.sim.raceline_viz:main',
+            'mpcc_sim_raceline = mercedes.sim.mpcc_sim_raceline:main',
+            'mpcc_sim_centerline = mercedes.sim.mpcc_sim_centerline:main',
+            'mppi_tracking_sim = mercedes.sim.mppi_tracking_sim:main',
             
+
         ],
     },
    

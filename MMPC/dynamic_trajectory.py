@@ -58,7 +58,7 @@ class DynamicTrajectoryPublisher(Node):
 
         try:
             now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform("map", "ego_racecar/base_link", now)
+            transform = self.tf_buffer.lookup_transform("map", "base_link", now)
 
             x = transform.transform.translation.x
             y = transform.transform.translation.y
@@ -69,7 +69,7 @@ class DynamicTrajectoryPublisher(Node):
             best_traj = None
             best_delta = 0.0
 
-            for delta in np.linspace(-self.theta_max, self.theta_max, 40):
+            for delta in np.linspace(-self.theta_max, self.theta_max, 50):
                 traj = self.simulate_rk4_trajectory(x, y, theta, delta)
                 score = self.score_trajectory(traj)
                 if score > best_score:
@@ -115,7 +115,7 @@ class DynamicTrajectoryPublisher(Node):
             mx = int((x - self.map_info.origin.position.x) / self.map_info.resolution)
             my = int((y - self.map_info.origin.position.y) / self.map_info.resolution)
 
-            if 0 <= mx < self.occupancy_grid.shape[1] and 0 <= my < self.occupancy_grid.shape[0]:
+            if 10 <= mx < self.occupancy_grid.shape[1] - 10 and 10 <= my < self.occupancy_grid.shape[0] - 10:
                 dist = self.occupancy_grid[my, mx]
                 min_dist = min(min_dist, dist)
                 score += dist
