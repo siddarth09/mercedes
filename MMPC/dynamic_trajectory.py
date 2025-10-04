@@ -24,9 +24,9 @@ class DynamicTrajectoryPublisher(Node):
         self.trajectory_pub = self.create_publisher(Path, "/dynamic_trajectory", qos)
 
         self.declare_parameter('wheelbase', 0.34)
-        self.declare_parameter('horizon_length', 30)
+        self.declare_parameter('horizon_length', 20)
         self.declare_parameter('dt', 0.1)
-        self.declare_parameter('max_speed', 1.0)
+        self.declare_parameter('max_speed', 2.0)
         self.declare_parameter('max_steering_angle', np.pi / 4)
 
         self.L = self.get_parameter('wheelbase').get_parameter_value().double_value

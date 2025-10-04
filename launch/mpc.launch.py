@@ -12,8 +12,8 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='mercedes',
-            executable='mpcc',
-            name='mpcc_trajectory_tracker',
+            executable='mpc',
+            name='mpc_trajectory_tracker',
             output='screen',
             emulate_tty=True,
             parameters=[config_file],
