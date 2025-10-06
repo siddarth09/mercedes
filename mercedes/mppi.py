@@ -25,27 +25,26 @@ class MPPI(Node):
         self.declare_parameter('N', 50)  # Prediction horizon
 
         # Vehicle parameters
-        self.declare_parameter('L', 0.342)  # Vehicle wheelbase
-        self.declare_parameter('max_speed', 2.0)   # Maximum speed (m/s)
+        self.declare_parameter('L', 0.36)  # Vehicle wheelbase
+        self.declare_parameter('max_speed', 5.0)   # Maximum speed (m/s)
         self.declare_parameter('min_speed', 0.3)   # Minimum speed (m/s)
         self.declare_parameter('max_steer', 0.4)   # Maximum steering angle (rad)
         self.declare_parameter('min_steer', -0.4)  # Minimum steering angle (rad)
 
         # MPPI parameters
-        self.declare_parameter('lambda_s', 0.1)       # Temperature parameter
+        self.declare_parameter('lambda_s', 0.3)       # Temperature parameter
         self.declare_parameter('K', 50)                # Number of sample trajectories
         self.declare_parameter('m', 2)                 # Dimension of control input [v, delta]
         self.declare_parameter('_sigma', [0.1, 0.01])   # Noise covariance for [v, delta]
         self.declare_parameter('safe_distance', 0.3)
         
         # Cost function weights
-        self.declare_parameter('w_collision', 50.0)           # Obstacle avoidance weight
-        self.declare_parameter('w_curvature', 0.5)           # Control smoothness weight
+        self.declare_parameter('w_collision', 100.0)           # Obstacle avoidance weight
+        self.declare_parameter('w_curvature', 1.0)           # Control smoothness weight
         self.declare_parameter('w_progress', 1.0)            # Forward progress weight
-        self.declare_parameter('w_steering_rate', 100.0)
+        self.declare_parameter('w_steering_rate', 10.0)
         self.declare_parameter('out_of_bounds_cost', 100.0) 
-        self.declare_parameter('collision_cost', 10.0) 
-
+        self.declare_parameter('collision_cost', 20.0) 
         
         # Get parameter values
         self.dt = self.get_parameter('dt').get_parameter_value().double_value
@@ -153,12 +152,20 @@ class MPPI(Node):
             traj.append((s[0], s[1], s[2]))
         return traj
     
-    def score_traj(self, traj:list, U_seq: np.ndarray):
-        score = self.w_collision * self._score_collision(traj)
-        score -= self.w_curvature * self._score_curvature(traj)
-        # score += self.w_progress  * self._score_progress(traj)
-        score -= self.w_steering_rate * self._score_steering_rate(U_seq)
-        return score
+    # def score_traj(self, traj:list, U_seq: np.ndarray):
+    #     score = self.w_collision * self._score_collision(traj)
+    #     score -= self.w_curvature * self._score_curvature(traj)
+    #     # score += self.w_progress  * self._score_progress(traj)
+    #     score -= self.w_steering_rate * self._score_steering_rate(U_seq)
+    #     return score
+
+    def score_components(self, traj, U_seq):
+        # higher is better for collision clearance & progress, lower is better for curvature/steer rate
+        coll = self._score_collision(traj)            # reward-like (clearance minus penalties)
+        curv = self._score_curvature(traj)            # cost-like  (sum |Δyaw|)
+        steer = self._score_steering_rate(U_seq)      # cost-like  (sum |Δδ|)
+        # prog = self._score_progress(U_seq)          # optional reward-like
+        return coll, curv, steer  # , prog
 
     def _score_collision(self, traj):
         score = 0.0
@@ -187,7 +194,7 @@ class MPPI(Node):
         yaws = [theta for _, _, theta in traj]
         diffs = np.unwrap(np.diff(yaws))
         cost = float(np.sum(np.abs(diffs)))
-        return cost                             
+        return cost                            
 
     def _score_progress(self, traj):
         pass
@@ -245,13 +252,32 @@ class MPPI(Node):
         U_candidates = self.U[None, :, :] + eps
         U_candidates = np.clip(U_candidates, self.u_min, self.u_max)
 
+        coll = np.empty(self.K, dtype=float)
+        curv = np.empty(self.K, dtype=float)
+        steer = np.empty(self.K, dtype=float)
         scores = np.empty(self.K, dtype=float)
+
         for k in range(self.K):
             traj = self.simulate_trajectory(self.x0, U_candidates[k])
-            score = self.score_traj(traj, U_candidates[k])
+            # score = self.score_traj(traj, U_candidates[k])
+            coll[k], curv[k], steer[k] = self.score_components(traj, U_candidates[k])
 
-            scores[k] = score if np.isfinite(score) else 1e-9
-        
+            # scores[k] = score if np.isfinite(score) else 1e-9
+
+        def z(a):
+            return (a - a.mean()) / (a.std() + 1e-6)
+
+        z_coll  = z(coll)     # clearance reward (higher better)
+        z_curv  = z(curv)     # curvature cost   (lower better)
+        z_steer = z(steer)    # steering cost    (lower better)
+
+        scores = (
+        self.w_collision     * z_coll
+        - self.w_curvature     * z_curv
+        - self.w_steering_rate * z_steer
+        # + self.w_progress      * z_prog
+        )
+                
         Jmax = np.max(scores)
         w = np.exp((scores - Jmax)/self.lambda_s)
         w_sum = np.sum(w) + 1e-12

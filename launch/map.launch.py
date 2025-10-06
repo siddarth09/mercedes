@@ -9,7 +9,7 @@ import os
 def generate_launch_description():
     # Paths
     mercedes_dir = get_package_share_directory('mercedes')
-    map_dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/csc433_track.yaml'
+    map_dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/maps/csc433_track.yaml'
     xacro_file = os.path.join(mercedes_dir, 'launch', 'racecar.xacro')
     # cartographer_config_dir = '/home/river/cvy_ws/src/f1tenth_system/mercedes/config'
 
