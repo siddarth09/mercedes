@@ -19,7 +19,7 @@ def compute_velocity_profile(csv_path="out/racing_line_world.csv",
     ds = np.gradient(s)
 
     # --- Parameters ---
-    a_lat_max = mu * g
+    a_lat_max = mu * g  # mu = friction coefficient
     a_long_acc = 0.8 * mu * g
     a_long_brake = 0.6 * mu * g
     kappa_thresh = 0.05

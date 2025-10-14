@@ -37,7 +37,7 @@ setup(
             'mpcc = MMPC.mpcc:main',
             'mpc_traj_tracker = mercedes.mpc_traj_tracker:main',
             'mpcc_centerline = mercedes.mpcc_centerline:main',
-          
+            'reference_path = raceline_optimizer.reference_path:main',
             'reference_traj_gen_sim=mercedes.sim.reference_traj_gen_sim:main',
             'mpc_path_tracker_sim = mercedes.sim.mpc_path_tracker_sim:main',
             'mppi_sim = mercedes.sim.mppi_sim:main',
