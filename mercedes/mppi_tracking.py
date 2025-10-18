@@ -40,14 +40,12 @@ class MPPI(Node):
         self.declare_parameter('m', 2)                 # Dimension of control input [v, delta]
         self.declare_parameter('_sigma', [0.1, 0.01])   # Noise covariance for [v, delta]
         self.declare_parameter('safe_distance', 0.3)
-        self.declare_parameter('lat_stride', 2)         # compute lat error every n steps
-
+        
         # Cost function weights
         self.declare_parameter('w_collision', 50.0)           # Obstacle avoidance weight
         self.declare_parameter('w_curvature', 0.5)           # Control smoothness weight
         self.declare_parameter('w_progress', 10.0)            # Forward progress weight
         self.declare_parameter('w_steering_rate', 5.0)
-        self.declare_parameter('w_lat_error', 0.0)
         self.declare_parameter('out_of_bounds_cost', 100.0) 
         self.declare_parameter('collision_cost', 20.0) 
 
@@ -64,14 +62,12 @@ class MPPI(Node):
         self.m = self.get_parameter('m').get_parameter_value().integer_value
         self._sigma = list(self.get_parameter('_sigma').get_parameter_value().double_array_value)
         self.safe_distance = self.get_parameter('safe_distance').get_parameter_value().double_value
-        self.lat_stride = self.get_parameter('lat_stride').get_parameter_value().integer_value
         
         # Cost weights
         self.w_collision = self.get_parameter('w_collision').get_parameter_value().double_value
         self.w_progress = self.get_parameter('w_progress').get_parameter_value().double_value
         self.w_curvature = self.get_parameter('w_curvature').get_parameter_value().double_value
         self.w_steering_rate = self.get_parameter('w_steering_rate').get_parameter_value().double_value
-        self.w_lat_error = self.get_parameter('w_lat_error').get_parameter_value().double_value
         self.out_of_bounds_cost = self.get_parameter('out_of_bounds_cost').get_parameter_value().double_value
         self.collision_cost = self.get_parameter('collision_cost').get_parameter_value().double_value
         
@@ -91,7 +87,7 @@ class MPPI(Node):
         self.trajectory_pub = self.create_publisher(Path, "/best_rollout", path_qos)
         # Subscribers
         self.map_sub = self.create_subscription(OccupancyGrid, "/map", self.map_callback, qos)
-        self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_callback, 10)
+        self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         
         self.timer = self.create_timer(self.dt, self.timer_callback)
         
@@ -109,7 +105,7 @@ class MPPI(Node):
         self.occupancy_grid = None
         self.x0 = np.zeros(3)
         self.map_frame = 'map'
-        self.base_frame = 'ego_racecar/base_link'
+        self.base_frame = 'base_link'
 
         dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes'
         self.centerline_path = os.path.join(dir, 'storage', 'csc433_clean.csv')
@@ -189,10 +185,8 @@ class MPPI(Node):
         coll = self._score_collision(traj)            
         curv = self._score_curvature(traj)         
         steer = self._score_steering_rate(U_seq)     
-        prog = self._score_progress(traj)    
-        # lat   = self._score_lateral(traj)      
-        lat = 0.0 
-        return coll, curv, steer, prog, lat
+        prog = self._score_progress(traj)            
+        return coll, curv, steer, prog
     
 # ================ COLLISION ========================    
     def _score_collision(self, traj):
@@ -225,6 +219,7 @@ class MPPI(Node):
         cost = float(np.sum(np.abs(diffs)))
         return cost                             
 
+    
 # ================ STEERING RATE ======================
     def _score_steering_rate(self, U_seq: np.ndarray):
         deltas = U_seq[:,1]
@@ -243,7 +238,7 @@ class MPPI(Node):
 
 # ================= LATERAL ERRORS ===================
     def _lateral_error(self, x, y):
-        s  = self.fast_nearest_s(x, y)
+        s  = self._nearest_s_fast(x, y)
         xc, yc, tx, ty = self._interp_centerline_and_tangent(s)
         nx = -ty
         ny = tx
@@ -260,15 +255,6 @@ class MPPI(Node):
         tx = np.interp(s, self.s_table, self.tx_table, period=period)
         ty = np.interp(s, self.s_table, self.ty_table, period=period)
         return float(xc), float(yc), float(tx), float(ty)
-    
-    def _score_lateral(self, traj):
-        # cost-like: sum of squared lateral error
-        cost = 0.0
-        for i in range(0, len(traj), self.lat_stride):
-            x, y, _ = traj[i]
-            e = self._lateral_error(x, y)
-            cost += e*e
-        return float(cost) * self.lat_stride  # scale for skipped steps
 
 # ==================== PROGRESS ======================
     def _precompute_centerline_tables(self, n_samples=4000):
@@ -416,11 +402,10 @@ class MPPI(Node):
         steer = np.empty(self.K, dtype=float)
         scores = np.empty(self.K, dtype=float)
         prog = np.empty(self.K, dtype=float)
-        lat = np.empty(self.K, dtype=float)
 
         for k in range(self.K):
             traj = self.simulate_trajectory(self.x0, U_candidates[k])
-            coll[k], curv[k], steer[k], prog[k], lat[k] = self.score_components(traj, U_candidates[k])
+            coll[k], curv[k], steer[k], prog[k] = self.score_components(traj, U_candidates[k])
 
         def z(a):
             return (a - a.mean()) / (a.std() + 1e-6)
@@ -428,15 +413,13 @@ class MPPI(Node):
         z_coll  = z(coll)     # clearance reward (higher better)
         z_curv  = z(curv)     # curvature cost   (lower better)
         z_steer = z(steer)    # steering cost    (lower better)
-        z_prog  = z(prog)
-        z_lat   = z(lat)
+        z_prog = z(prog)
 
         scores = (
         self.w_collision     * z_coll
         - self.w_curvature     * z_curv
         - self.w_steering_rate * z_steer
         + self.w_progress      * z_prog
-        - self.w_lat_error     * z_lat
         )
                 
         Jmax = np.max(scores)

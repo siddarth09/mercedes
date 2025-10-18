@@ -152,12 +152,6 @@ class MPPI(Node):
             traj.append((s[0], s[1], s[2]))
         return traj
     
-    # def score_traj(self, traj:list, U_seq: np.ndarray):
-    #     score = self.w_collision * self._score_collision(traj)
-    #     score -= self.w_curvature * self._score_curvature(traj)
-    #     # score += self.w_progress  * self._score_progress(traj)
-    #     score -= self.w_steering_rate * self._score_steering_rate(U_seq)
-    #     return score
 
     def score_components(self, traj, U_seq):
         # higher is better for collision clearance & progress, lower is better for curvature/steer rate
