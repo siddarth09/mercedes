@@ -25,7 +25,7 @@ class MPPI(Node):
         
         # Time and horizon parameters
         self.declare_parameter('dt', 0.1)
-        self.declare_parameter('N', 30)  # Prediction horizon
+        self.declare_parameter('N', 50)  # Prediction horizon
 
         # Vehicle parameters
         self.declare_parameter('wheelbase', 0.36)  # Vehicle wheelbase
@@ -35,7 +35,7 @@ class MPPI(Node):
         self.declare_parameter('min_steer', -0.4)  # Minimum steering angle (rad)
 
         # MPPI parameters
-        self.declare_parameter('lambda_s', 0.6)       # Temperature parameter
+        self.declare_parameter('lambda_s', 0.4)       # Temperature parameter
         self.declare_parameter('K', 50)                # Number of sample trajectories
         self.declare_parameter('m', 2)                 # Dimension of control input [v, delta]
         self.declare_parameter('_sigma', [0.1, 0.01])   # Noise covariance for [v, delta]
@@ -43,9 +43,9 @@ class MPPI(Node):
         
         # Cost function weights
         self.declare_parameter('w_collision', 50.0)           # Obstacle avoidance weight
-        self.declare_parameter('w_curvature', 0.5)           # Control smoothness weight
-        self.declare_parameter('w_progress', 10.0)            # Forward progress weight
-        self.declare_parameter('w_steering_rate', 5.0)
+        self.declare_parameter('w_curvature', 0.2)           # Control smoothness weight
+        self.declare_parameter('w_progress', 8.0)            # Forward progress weight
+        self.declare_parameter('w_steering_rate', 1.0)
         self.declare_parameter('out_of_bounds_cost', 100.0) 
         self.declare_parameter('collision_cost', 20.0) 
 
@@ -86,7 +86,7 @@ class MPPI(Node):
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
         self.trajectory_pub = self.create_publisher(Path, "/best_rollout", path_qos)
         # Subscribers
-        self.map_sub = self.create_subscription(OccupancyGrid, "/map", self.map_callback, qos)
+        self.map_sub = self.create_subscription(OccupancyGrid, "/plan_map", self.map_callback, qos)
         self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         
         self.timer = self.create_timer(self.dt, self.timer_callback)
@@ -109,8 +109,6 @@ class MPPI(Node):
 
         dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes'
         self.centerline_path = os.path.join(dir, 'storage', 'csc433_clean.csv')
-
-        self.create_timer(self.dt, self.timer_callback)
 
         x, y = load_trajectory(self.centerline_path)
         self.get_logger().info(f"CSV loaded from {self.centerline_path}")

@@ -28,28 +28,28 @@ class MPCCNode(Node):
 
         # Parameters
         self.declare_parameter('dt', 0.02)
-        self.declare_parameter('N', 30)
+        self.declare_parameter('N', 20)
         self.declare_parameter('wheelbase', 0.36)
-        self.declare_parameter('half_width', 0.5)
+        self.declare_parameter('half_width', 0.3)
         self.declare_parameter('safety_margin', 0.0)
 
 
         # Weights for the cost function
-        self.declare_parameter('Q_norm',   5.0)   # penalize lateral offset strongly
-        self.declare_parameter('Q_tang',   2.0)   # smaller, keep smooth progress along track
-        self.declare_parameter('Q_psi',    2.0)   # heading alignment weight
+        self.declare_parameter('Q_norm',   200.0)   # penalize lateral offset strongly
+        self.declare_parameter('Q_tang',   5.0)   # smaller, keep smooth progress along track
+        self.declare_parameter('Q_psi',    10.0)   # heading alignment weight
 
         # Control effort weights
         self.declare_parameter('R_vel',    1.0)   # moderate penalty on speed magnitude
         self.declare_parameter('R_delta',  0.1)   # strong penalty on steering magnitude
-        self.declare_parameter('R_ddelta', 1.0)   # big penalty on steering *rate* (smoothness)
+        self.declare_parameter('R_ddelta', 0.1)   # big penalty on steering *rate* (smoothness)
 
         # Progress reward
-        self.declare_parameter('Q_prog',   0.1)   # higher = drive forward faster
+        self.declare_parameter('Q_prog',   0.2)   # higher = drive forward faster
 
         # Terminal (end-of-horizon) error weights
         self.declare_parameter('Q_norm_K', 3.0)
-        self.declare_parameter('Q_tang_K', 3.0)
+        self.declare_parameter('Q_tang_K', 1.0)
         self.declare_parameter('Q_psi_K',  3.0)
 
         # Control input constraints
@@ -232,12 +232,13 @@ class MPCCNode(Node):
             'ipopt.print_level': 0, 'print_time': 0,
             'ipopt.tol': 1e-3,
             'ipopt.mu_strategy': 'adaptive',
-            'ipopt.max_iter': 100,
+            'ipopt.max_iter': 50,
             'ipopt.hessian_approximation': 'limited-memory',
             'ipopt.linear_solver': 'mumps',
             'ipopt.warm_start_init_point': 'yes',
             'ipopt.acceptable_tol': 1e-2,
             'ipopt.acceptable_iter': 5,
+            'ipopt.sb': "yes",
         })
 
         nz = 4*(self.N+1) + 2*self.N
@@ -327,7 +328,8 @@ class MPCCNode(Node):
 
     def get_errors(self, x, y, psi, s):
         # wrap s once
-        sw = self._wrap_s_sym(s) if isinstance(s, ca.SX) else self._wrap_s(float(s))
+        # sw = self._wrap_s_sym(s) if isinstance(s, ca.SX) else self._wrap_s(float(s))
+        sw=s
 
         # centerline
         x_ref = self.ca_splines['x'](sw)
@@ -399,7 +401,7 @@ class MPCCNode(Node):
 
         # Curvature and progress rate
         kap = float(self.ca_splines['kappa_xy'](sw))
-        den = max(0.2, 1.0 - kap*e_norm)         # same floor you use in the NLP
+        den = ca.fmax(0.2, 1.0 - kap*e_norm)        # same floor you use in the NLP
         sdot = v * cos_epsi / den
 
         # Kinematic bicycle
@@ -443,8 +445,6 @@ class MPCCNode(Node):
                  float(s_est),
                  float(self.last_delta)]
         
- 
-
 
         # ---------- Build seed X_seed, U_seed ----------
         v_seed = float(np.clip(self.current_vel if self.current_vel > 0.1 else 0.8,
@@ -497,11 +497,11 @@ class MPCCNode(Node):
         # Flatten AFTER building the seed; you’ll apply s-trust on X_seed later
         x0 = list(X_seed.flatten()) + list(U_seed.flatten())
 
-        # s_trust = max(2.0, 0.5 * v_seed * self.N * self.dt)  # heuristic
-        # for k in range(self.N+1):
-        #     sk = X_seed[k, 3]
-        #     lbx[4*k + 3] = sk - s_trust
-        #     ubx[4*k + 3] = sk + s_trust
+        s_trust = max(2.0, 0.5 * v_seed * self.N * self.dt)  # heuristic
+        for k in range(self.N+1):
+            sk = X_seed[k, 3]
+            self.lbx[4*k + 3] = sk - s_trust
+            self.ubx[4*k + 3] = sk + s_trust
 
         # Sanity check the seed
         x0 = np.array(x0, dtype=float)
@@ -512,16 +512,16 @@ class MPCCNode(Node):
                     float(self.measured_state[2]), float(self.measured_state[3])]
 
         try:
-            # kwargs = dict(x0=self.x0_vec, p=self.p_vec, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg)
-            # if self.lam_x is not None and self.lam_g is not None and np.isfinite(self.lam_x).all() and np.isfinite(self.lam_g).all():
-            #     kwargs['lam_x0'] = self.lam_x
-            #     kwargs['lam_g0'] = self.lam_g
-            # sol = self.solver(**kwargs)
+            kwargs = dict(x0=self.x0_vec, p=self.p_vec, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg)
+            if self.lam_x is not None and self.lam_g is not None and np.isfinite(self.lam_x).all() and np.isfinite(self.lam_g).all():
+                kwargs['lam_x0'] = self.lam_x
+                kwargs['lam_g0'] = self.lam_g
+            sol = self.solver(**kwargs)
 
-            sol = self.solver(x0=x0,
-                  lbx=self.lbx, ubx=self.ubx,
-                  lbg=self.lbg, ubg=self.ubg,
-                  p=self.p_vec)
+            # sol = self.solver(x0=x0,
+            #       lbx=self.lbx, ubx=self.ubx,
+            #       lbg=self.lbg, ubg=self.ubg,
+            #       p=self.p_vec)
 
             z_opt = sol['x'].full().flatten()
 

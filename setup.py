@@ -47,6 +47,7 @@ setup(
             'mppi_tracking_sim = mercedes.sim.mppi_tracking_sim:main',
             'mppi = mercedes.mppi:main',
             'mppi_tracking = mercedes.mppi_tracking:main',
+            'sac_inference = mercedes.sac_inference:main',
             
 
         ],
