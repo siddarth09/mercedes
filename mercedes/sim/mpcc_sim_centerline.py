@@ -15,7 +15,7 @@ from tf2_ros import Buffer, TransformListener, LookupException, ConnectivityExce
 from scipy.interpolate import CubicSpline
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
-
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from casadi import SX, vertcat, Function, nlpsol, diag, atan, tan, cos, sin
 from ament_index_python.packages import get_package_share_directory
 
@@ -27,47 +27,36 @@ class MPCCNode(Node):
         super().__init__('mpcc_sim')
 
         # Parameters
-        self.declare_parameter('dt', 0.01)
-        self.declare_parameter('N', 30)
+        self.declare_parameter('dt', 0.02)
+        self.declare_parameter('N', 20)
         self.declare_parameter('wheelbase', 0.36)
-        self.declare_parameter('half_width', 0.5)
+        self.declare_parameter('half_width', 0.3)
         self.declare_parameter('safety_margin', 0.0)
 
-        # # Weights for the cost function
-        # self.declare_parameter('Q_norm', 8.0)
-        # self.declare_parameter('Q_tang', 6.0)
-        # self.declare_parameter('Q_psi', 6.0)
-        # self.declare_parameter('R_vel', 0.8)
-        # self.declare_parameter('R_delta', 10.0)
-        # self.declare_parameter('Q_prog', 2.0)
-        # self.declare_parameter('Q_norm_K', 6.0)
-        # self.declare_parameter('Q_tang_K', 6.0)
-        # self.declare_parameter('Q_psi_K', 6.0)
-
-        # # Control input constraints
-        # self.declare_parameter('v_min', 0.5)
-        # self.declare_parameter('v_max', 2.0)
-        # self.declare_parameter('delta_min', -0.4)
-        # self.declare_parameter('delta_max', 0.4)
-        # self.declare_parameter('R_ddelta', 100.0) # steering rate (big)
 
         # Weights for the cost function
-        self.declare_parameter('Q_norm', 1.0)
-        self.declare_parameter('Q_tang', 2.0)
-        self.declare_parameter('Q_psi', 3.0)
-        self.declare_parameter('R_vel', 0.5)
-        self.declare_parameter('R_delta', 8.0)
-        self.declare_parameter('Q_prog', 2.0)
-        self.declare_parameter('Q_norm_K', 1.0)
-        self.declare_parameter('Q_tang_K', 0.5)
-        self.declare_parameter('Q_psi_K', 3.0)
+        self.declare_parameter('Q_norm',   200.0)   # penalize lateral offset strongly
+        self.declare_parameter('Q_tang',   5.0)   # smaller, keep smooth progress along track
+        self.declare_parameter('Q_psi',    10.0)   # heading alignment weight
+
+        # Control effort weights
+        self.declare_parameter('R_vel',    1.0)   # moderate penalty on speed magnitude
+        self.declare_parameter('R_delta',  0.1)   # strong penalty on steering magnitude
+        self.declare_parameter('R_ddelta', 0.1)   # big penalty on steering *rate* (smoothness)
+
+        # Progress reward
+        self.declare_parameter('Q_prog',   0.2)   # higher = drive forward faster
+
+        # Terminal (end-of-horizon) error weights
+        self.declare_parameter('Q_norm_K', 3.0)
+        self.declare_parameter('Q_tang_K', 1.0)
+        self.declare_parameter('Q_psi_K',  3.0)
 
         # Control input constraints
-        self.declare_parameter('v_min', 0.5)
-        self.declare_parameter('v_max', 2.0)
+        self.declare_parameter('v_min', 0.3)
+        self.declare_parameter('v_max', 1.5)
         self.declare_parameter('delta_min', -0.4)
         self.declare_parameter('delta_max', 0.4)
-        self.declare_parameter('R_ddelta', 50.0) # steering rate (big)
 
         # Retrieve parameters
         self.dt = self.get_parameter('dt').get_parameter_value().double_value
@@ -92,11 +81,18 @@ class MPCCNode(Node):
         self.delta_max = self.get_parameter('delta_max').get_parameter_value().double_value
         self.R_ddelta = self.get_parameter('R_ddelta').get_parameter_value().double_value
 
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
         # Subscriptions
         self.create_subscription(Odometry, '/ego_racecar/odom', self.odom_callback, 10)
         # Publishers
         self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
-        self.s_curve_pub = self.create_publisher(Path, '/s_curve', 10)
+        self.s_curve_pub = self.create_publisher(Path, '/s_curve', qos)
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -106,9 +102,12 @@ class MPCCNode(Node):
         self.current_state = None
         self.current_vel = 0.0
         self.last_delta = 0.0
+        self.prev_X = None   # shape (N+1, 4)
+        self.prev_U = None   # shape (N, 2)
+        self.have_warm = False
 
         dir = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes'
-        self.centerline_path = os.path.join(dir, 'storage', 'racelines', 'Spielberg_centerline.csv')
+        self.centerline_path = os.path.join(dir, 'storage', 'csc433_clean.csv')
 
         self.create_timer(self.dt, self.timer_callback)
 
@@ -128,6 +127,163 @@ class MPCCNode(Node):
         self.s0 = self.s_eval[0]
         self.L = self.s_eval[-1]
 
+        self.Xsym = None
+        self.Usym = None
+        self.zsym = None
+        self.psym = None
+        self.gsym = None
+        self.fs = None
+        self.gs = None
+        self.solver = None
+
+        # persistent vectors reused every tick
+        self.lbx = None
+        self.ubx = None
+        self.lbg = None
+        self.ubg = None
+        self.x0_vec = None
+        self.p_vec = None
+        self.lam_x = None
+        self.lam_g = None
+
+        self.build_solver()
+
+
+    def build_solver(self):
+
+        self.Xsym = [ca.SX.sym(f'X_{k}', 4) for k in range(self.N+1)]
+        self.Usym = [ca.SX.sym(f'U_{k}', 2) for k in range(self.N)]
+        self.zsym = ca.vertcat(*self.Xsym, *self.Usym)
+
+        # Parameter vector p = [x_m, y_m, psi_m, s_m, delta_prev]
+        self.psym = ca.SX.sym('p', 5)
+
+        x, y, psi, s = ca.SX.sym('x'), ca.SX.sym('y'), ca.SX.sym('psi'), ca.SX.sym('s')
+        x_state = ca.vertcat(x, y, psi, s)
+        u_ctrl  = ca.SX.sym('u', 2)
+        v_u, d_u = u_ctrl[0], u_ctrl[1]
+
+        e_norm, e_tang, e_psi, kap = self.get_errors(x, y, psi, s)
+        s_dot   = v_u * ca.cos(e_psi) / (1.0 - kap * e_norm + 1e-6)
+
+        x_next  = x + v_u*ca.cos(psi) * self.dt
+        y_next  = y + v_u*ca.sin(psi) * self.dt
+        psi_next= psi + v_u*ca.tan(d_u)/self.wheelbase * self.dt
+        s_next  = s + s_dot * self.dt
+
+        next_state = ca.vertcat(x_next, y_next, psi_next, s_next)
+        dynamics_f = ca.Function('dynamics', [x_state, u_ctrl], [next_state])
+
+
+        cost = 0
+        constraints = []
+
+        # initial-state equality: X0 == measured (from p)
+        X0 = self.Xsym[0]
+        constraints.append(X0 - self.psym[0:4])   # vector constraint of length 4
+
+        for k in range(self.N):
+            Xk = self.Xsym[k]
+            Uk = self.Usym[k]
+            xk, yk, psik, sk = Xk[0], Xk[1], Xk[2], Xk[3]
+            vk, deltak = Uk[0], Uk[1]
+
+            # steering rate
+            delta_prev = self.psym[4] if k == 0 else self.Usym[k-1][1]
+            ddel = deltak - delta_prev
+
+            # errors
+            en, et, eps, kapk = self.get_errors(xk, yk, psik, sk)
+            den = ca.fmax(0.2, 1.0 - kapk*en)
+            sdot_k = vk * ca.cos(eps) / den
+            cos_eps = ca.cos(eps)
+
+            # stage cost
+            cost += self.Q_norm*en**2 + self.Q_tang*et**2
+            cost += self.R_vel*vk**2 + self.R_delta*deltak**2
+            cost += -self.Q_prog*sdot_k
+            cost += self.R_ddelta*ddel**2
+            cost += self.Q_psi*(1.0 - cos_eps)
+
+            # dynamics equality
+            X_next = dynamics_f(Xk, Uk)
+            constraints.append(self.Xsym[k+1] - X_next)
+
+            # track bounds: |e_norm| <= half_width
+            constraints.append(en - self.half_width)
+            constraints.append(-en - self.half_width)
+
+        # terminal cost
+        XN = self.Xsym[self.N]
+        enN, etN, epsN, _ = self.get_errors(XN[0], XN[1], XN[2], XN[3])
+        cost += self.Q_norm_K*enN**2 + self.Q_tang_K*etN**2 
+        cost += self.Q_psi_K * (1.0 - ca.cos(epsN))
+
+        self.gsym = ca.vertcat(*constraints)
+        self.fs = ca.Function('f', [self.zsym, self.psym], [cost])
+        self.gs = ca.Function('g', [self.zsym, self.psym], [self.gsym])
+
+        nlp = {'x': self.zsym,
+            'p': self.psym,
+            'f': self.fs(self.zsym, self.psym),
+            'g': self.gs(self.zsym, self.psym)}
+
+        self.solver = ca.nlpsol('solver', 'ipopt', nlp, {
+            'ipopt.print_level': 0, 'print_time': 0,
+            'ipopt.tol': 1e-3,
+            'ipopt.mu_strategy': 'adaptive',
+            'ipopt.max_iter': 50,
+            'ipopt.hessian_approximation': 'limited-memory',
+            'ipopt.linear_solver': 'mumps',
+            'ipopt.warm_start_init_point': 'yes',
+            'ipopt.acceptable_tol': 1e-2,
+            'ipopt.acceptable_iter': 5,
+            'ipopt.sb': "yes",
+        })
+
+        nz = 4*(self.N+1) + 2*self.N
+        ng = 4 + self.N* (4 + 2)  # 4 for X0 eq; per k: 4 dyn + 2 track
+
+        self.lbx = -np.inf*np.ones(nz)
+        self.ubx =  np.inf*np.ones(nz)
+
+        # state bounds (soft but finite)
+        XY_MAX, PSI_MAX = 100.0, math.pi
+        for k in range(self.N+1):
+            i = 4*k
+            self.lbx[i+0], self.ubx[i+0] = -XY_MAX,  XY_MAX   # x
+            self.lbx[i+1], self.ubx[i+1] = -XY_MAX,  XY_MAX   # y
+            self.lbx[i+2], self.ubx[i+2] = -PSI_MAX, PSI_MAX  # psi
+            # s bounds will be set per tick around seed
+
+        # control bounds
+        base = 4*(self.N+1)
+        for k in range(self.N):
+            self.lbx[base + 2*k + 0] = self.v_min
+            self.ubx[base + 2*k + 0] = self.v_max
+            self.lbx[base + 2*k + 1] = self.delta_min
+            self.ubx[base + 2*k + 1] = self.delta_max
+
+        # constraint bounds (lbg/ubg) — fill once; entries are constants
+        # order: [X0-Xm==0 (4)] + per k: [dyn(4)==0, en<=half_width (1), -en<=half_width (1)]
+        self.lbg = []
+        self.ubg = []
+        self.lbg += [0.0, 0.0, 0.0, 0.0]; self.ubg += [0.0, 0.0, 0.0, 0.0]
+        for _ in range(self.N):
+            self.lbg += [0.0, 0.0, 0.0, 0.0]; self.ubg += [0.0, 0.0, 0.0, 0.0]  # dynamics
+            self.lbg += [-ca.inf];            self.ubg += [0.0]                 # en - w <= 0
+            self.lbg += [-ca.inf];            self.ubg += [0.0]                 # -en - w <= 0
+        self.lbg = np.array(self.lbg, dtype=float)
+        self.ubg = np.array(self.ubg, dtype=float)
+
+        # allocate x0/p/lam
+        self.x0_vec = np.zeros(nz, dtype=float)
+        self.p_vec  = np.zeros(5,  dtype=float)
+        self.lam_x  = np.zeros(nz, dtype=float)
+        self.lam_g  = np.zeros(len(self.lbg), dtype=float)
+
+
+
     def publish_smooth_curve(self, s_eval: list):
         path = Path()
         path.header.frame_id = 'map'
@@ -135,13 +291,14 @@ class MPCCNode(Node):
         for s in s_eval:
             ps = PoseStamped()
             ps.header.frame_id = 'map'
-            ps.pose.position.x = self.x_func(s)
-            ps.pose.position.y = self.y_func(s)
+            ps.pose.position.x = float(self.x_func(s))
+            ps.pose.position.y = float(self.y_func(s))
             ps.pose.position.z = 0.0
             ps.pose.orientation.w = 1.0 
             path.poses.append(ps)
 
         self.s_curve_pub.publish(path)
+        self.get_logger().info(f"s_curve published with {len(self.s_eval)} points")
 
     def odom_callback(self, msg : Odometry):
         x_vel = msg.twist.twist.linear.x
@@ -170,41 +327,97 @@ class MPCCNode(Node):
         return (s_sym - self.s0) - ca.floor((s_sym - self.s0) / self.L) * self.L + self.s0
 
     def get_errors(self, x, y, psi, s):
-        # wrap/clip s once, then use the same 'sw' everywhere
-        try:
-            sw = self._wrap_s_sym(s)
-        except Exception:
-            sw = s  # if you're calling this in numpy context, but here it's CasADi
+        # wrap s once
+        # sw = self._wrap_s_sym(s) if isinstance(s, ca.SX) else self._wrap_s(float(s))
+        sw=s
 
-        # centerline point
+        # centerline
         x_ref = self.ca_splines['x'](sw)
         y_ref = self.ca_splines['y'](sw)
 
-        # unit tangent and normal
+        # raw tangent
         tx = self.ca_splines['tx'](sw)
         ty = self.ca_splines['ty'](sw)
-        nx = -ty
-        ny =  tx
 
-        # position error vector
+        # normalize safely: t = t / max(norm, eps)
+        if isinstance(tx, ca.SX):
+            tnorm = ca.sqrt(tx*tx + ty*ty)
+            tnorm = ca.fmax(1e-9, tnorm)      # avoid divide-by-zero
+            txu = tx / tnorm
+            tyu = ty / tnorm
+        else:
+            tnorm = max(1e-9, math.hypot(float(tx), float(ty)))
+            txu = float(tx)/tnorm
+            tyu = float(ty)/tnorm
+
+        nx = -tyu
+        ny =  txu
+
+        # position error
         ex = x - x_ref
         ey = y - y_ref
 
-        # Frenet errors
-        e_norm = nx*ex + ny*ey         # lateral error (left positive)
-        e_tang = tx*ex + ty*ey         # along-track error (optional)
+        e_norm = nx*ex + ny*ey
+        e_tang = txu*ex + tyu*ey
 
-        # heading error via dot/cross with tangent (no psi_ref needed)
-        hx = ca.cos(psi)
-        hy = ca.sin(psi)
-        cos_epsi = tx*hx + ty*hy
-        sin_epsi = tx*hy - ty*hx       # 2D cross(t, h)
-        e_psi = ca.atan2(sin_epsi, cos_epsi)
+        # heading error (robust)
+        hx = ca.cos(psi) if isinstance(psi, ca.SX) else math.cos(float(psi))
+        hy = ca.sin(psi) if isinstance(psi, ca.SX) else math.sin(float(psi))
+        cos_epsi = txu*hx + tyu*hy
+        sin_epsi = txu*hy - tyu*hx
 
-        # curvature at s (use kappa from geometry or your kappa spline)
-        kap = self.ca_splines['kappa_xy'](sw)  # or self.ca_splines['kappa'](sw)
+        # atan2 is safe unless both are exactly zero; make sure that can't happen
+        # (with the normalization above, they won't.)
+        e_psi = ca.atan2(sin_epsi, cos_epsi) if isinstance(sin_epsi, ca.SX) \
+                else math.atan2(float(sin_epsi), float(cos_epsi))
+
+        # curvature
+        kap = self.ca_splines['kappa_xy'](sw)
 
         return e_norm, e_tang, e_psi, kap
+
+
+    def _f_cont(self, x, u):
+        # x = [X, Y, psi, s], u = [v, delta]
+        X, Y, psi, s = map(float, x)
+        v, delta = map(float, u)
+
+        # Wrap s and read geometry
+        sw  = self._wrap_s(s)
+        tx  = float(self.ca_splines['tx'](sw))   # unit tangent (already normalized)
+        ty  = float(self.ca_splines['ty'](sw))
+        nx, ny = -ty, tx                         # unit normal (left-positive)
+
+        # Centerline position
+        x_ref = float(self.ca_splines['x'](sw))
+        y_ref = float(self.ca_splines['y'](sw))
+
+        # Frenet lateral error
+        ex, ey  = X - x_ref, Y - y_ref
+        e_norm  = nx*ex + ny*ey
+
+        # Heading alignment with tangent
+        cos_epsi = tx*math.cos(psi) + ty*math.sin(psi)
+
+        # Curvature and progress rate
+        kap = float(self.ca_splines['kappa_xy'](sw))
+        den = ca.fmax(0.2, 1.0 - kap*e_norm)        # same floor you use in the NLP
+        sdot = v * cos_epsi / den
+
+        # Kinematic bicycle
+        Xdot   = v * math.cos(psi)
+        Ydot   = v * math.sin(psi)
+        psidot = v * math.tan(delta) / self.wheelbase
+
+        return np.array([Xdot, Ydot, psidot, sdot], dtype=float)
+
+    def _rk4_step(self, x, u, dt):
+        k1 = self._f_cont(x, u)
+        k2 = self._f_cont(x + 0.5*dt*k1, u)
+        k3 = self._f_cont(x + 0.5*dt*k2, u)
+        k4 = self._f_cont(x + dt*k3, u)
+        return x + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4)
+
 
     def timer_callback(self):
         # Get (x,y,yaw,v) 
@@ -217,141 +430,115 @@ class MPCCNode(Node):
         
         s_est = nearest_s_xy(x, y, self.s_eval, self.x_func, self.y_func, is_closed=True)
 
-        if s_est is None:
-            self.get_logger().warn("Could not find nearest s! Skippins this tick")
-            return
+        if s_est is None or not np.isfinite(s_est):
+            # fall back to previous s (if warm) or to start of track
+            if self.have_warm and self.prev_X is not None:
+                s_est = float(self.prev_X[0, 3])
+            else:
+                s_est = float(self.s0)
 
         self.measured_state = np.array([x, y, psi, s_est, v])
 
-        x   = ca.SX.sym('x')
-        y   = ca.SX.sym('y')
-        psi = ca.SX.sym('psi')
-        s   = ca.SX.sym('s')
-        x_state = ca.vertcat(x, y, psi, s)
-
-        u_ctrl  = ca.SX.sym('u_ctrl', 2)  # single 2x1 control vector symbol
-        v_u, d_u = u_ctrl[0], u_ctrl[1]   # extract speed and steering    
-
-        x_next = x + v_u*ca.cos(psi) * self.dt
-        y_next = y + v_u*ca.sin(psi) * self.dt
-        psi_next = psi + ((v_u*ca.tan(d_u))/self.wheelbase) * self.dt
+        self.p_vec[:] = [float(self.current_state[0]),
+                 float(self.current_state[1]),
+                 float(self.current_state[2]),
+                 float(s_est),
+                 float(self.last_delta)]
         
-        e_norm, e_tang, e_psi, kap = self.get_errors(x, y, psi, s)
-        
-        eps = 1e-6
-        # s_dot = v_u * cos_epsi / (1.0 - kap*e_norm + eps)
-        s_dot   = v_u * ca.cos(e_psi) / (1.0 - kap * e_norm + eps)
-        s_next  = s + s_dot * self.dt
 
-        next_state = ca.vertcat(x_next, y_next, psi_next, s_next)
-        dynamics = ca.Function('dynamics', [x_state, u_ctrl], [next_state])
+        # ---------- Build seed X_seed, U_seed ----------
+        v_seed = float(np.clip(self.current_vel if self.current_vel > 0.1 else 0.8,
+                            self.v_min, self.v_max))
 
-        X = [ca.SX.sym(f'X_{k}', 4) for k in range(self.N+1)]
-        U = [ca.SX.sym(f'U_{k}', 2) for k in range(self.N)]
+        X_seed = np.zeros((self.N+1, 4), dtype=float)
+        U_seed = np.zeros((self.N, 2), dtype=float)
 
-        cost = 0
-        constraints = []
-        lbg = []
-        ubg = []
+        use_warm = (self.have_warm and
+                    self.prev_X is not None and self.prev_U is not None and
+                    self.prev_X.shape == (self.N+1, 4) and self.prev_U.shape == (self.N, 2))
 
-        constraints.append(X[0] - ca.DM(self.measured_state[:4]))
-        lbg += [0.0, 0.0, 0.0, 0.0]
-        ubg += [0.0, 0.0, 0.0, 0.0]
-        
-        for k in range(self.N):
+        if use_warm:
+            # Shift last solution forward; propagate terminal node with RK4
+            X_seed[:-1, :] = self.prev_X[1:, :]
+            X_seed[-1,  :] = self._rk4_step(X_seed[-2, :], self.prev_U[-1, :], self.dt)
+            U_seed[:-1, :] = self.prev_U[1:, :]
+            U_seed[-1,  :] = self.prev_U[-1, :]
+        else:
+            # Centerline guess at constant speed using CasADi interpolants
+            for k in range(self.N+1):
+                s_guess = self._wrap_s(s_est + k*self.dt*v_seed)
 
-            Xk = X[k]
-            Uk = U[k]
+                # centerline position
+                xg = float(self.ca_splines['x'](s_guess))
+                yg = float(self.ca_splines['y'](s_guess))
 
-            xk  = Xk[0]
-            yk  = Xk[1]
-            psik= Xk[2]
-            sk  = Xk[3]
+                # unit tangent -> heading
+                tx = float(self.ca_splines['tx'](s_guess))
+                ty = float(self.ca_splines['ty'](s_guess))
+                psi_g = float(np.arctan2(ty, tx))
 
-            v_k     = Uk[0]
-            delta_k = Uk[1]
-            if k == 0:
-                delta_prev = ca.DM(self.last_delta)
-            else:
-                delta_prev = U[k-1][1]
-            ddel = delta_k - delta_prev
+                X_seed[k, :] = [xg, yg, psi_g, s_guess]
 
-            e_norm_k, e_tang_k, e_psi_k, kap_k = self.get_errors(xk, yk, psik, sk)
+            U_seed[:, 0] = v_seed
+            U_seed[:, 1] = self.last_delta
 
-            eps = 1e-6
-            tx_k = self.ca_splines['tx'](sk)
-            ty_k = self.ca_splines['ty'](sk)
-            den = 1.0 - kap_k * e_norm_k
-            den = ca.fmax(0.2, den)   # floor
+        # Enforce measured state at node 0
+        X_seed[0, 0] = float(x)
+        X_seed[0, 1] = float(y)
+        X_seed[0, 2] = float(psi)
+        X_seed[0, 3] = float(s_est)
 
-            s_dot_k = v_k * ca.cos(e_psi_k) / den
-            # s_dot_k = v_k * ca.cos(e_psi_k) / (1.0 - kap_k * e_norm_k + eps)
-            cos_epsi = tx_k*ca.cos(psik) + ty_k*ca.sin(psik)
+        # Unwrap s along the horizon to keep continuity
+        for k in range(1, self.N+1):
+            ds = X_seed[k, 3] - X_seed[k-1, 3]
+            if ds >  0.5*self.L:  X_seed[k, 3] -= self.L
+            if ds < -0.5*self.L:  X_seed[k, 3] += self.L
 
-            # Stage cost
-            cost += self.Q_norm*e_norm_k**2 + self.Q_tang*e_tang_k**2 # Contour errors
-            # cost += + self.Q_psi*e_psi_k**2
-            cost += self.R_vel*v_k**2 + self.R_delta*delta_k**2       # Regularization
-            cost += -self.Q_prog*s_dot_k                              # Reward progress
-            cost += self.R_ddelta * ddel**2                           # Steering rate penalty
-            cost += self.Q_psi * (1.0 - cos_epsi)                     # bounded, smooth
-            
+        # Flatten AFTER building the seed; you’ll apply s-trust on X_seed later
+        x0 = list(X_seed.flatten()) + list(U_seed.flatten())
 
-            X_next = dynamics(Xk, Uk)
-            constraints.append(X[k+1] - X_next)
-            lbg += [0.0, 0.0, 0.0, 0.0]
-            ubg += [0.0, 0.0, 0.0, 0.0]
+        s_trust = max(2.0, 0.5 * v_seed * self.N * self.dt)  # heuristic
+        for k in range(self.N+1):
+            sk = X_seed[k, 3]
+            self.lbx[4*k + 3] = sk - s_trust
+            self.ubx[4*k + 3] = sk + s_trust
 
-            constraints.append(e_norm_k - self.half_width)
-            lbg += [-ca.inf]
-            ubg += [0.0]
-
-            constraints.append(-e_norm_k - self.half_width)
-            lbg += [-ca.inf]
-            ubg += [0.0]
-
-        # Terminal cost
-        XN = X[self.N]
-        xN  = XN[0]
-        yN  = XN[1]
-        psiN= XN[2]
-        sN  = XN[3]
-
-        e_norm_N, e_tang_N, e_psi_N, kap_N = self.get_errors(xN, yN, psiN, sN)
-        cost += self.Q_norm_K*e_norm_N**2 + self.Q_tang_K*e_tang_N**2 + self.Q_psi_K*e_psi_N**2
-
-        z = vertcat(*X, *U)
-        g = vertcat(*constraints)
-
-        lbx = []
-        ubx = []
-
-        for _ in range(self.N+1):
-            lbx += [-np.inf, -np.inf, -np.inf, -np.inf]
-            ubx += [np.inf, np.inf, np.inf, np.inf]
-        for _ in range(self.N):
-            lbx += [self.v_min, self.delta_min]
-            ubx += [self.v_max, self.delta_max]
-
-        x0 = [*self.measured_state[:4]] * (self.N+1) + [0.5, 0.0] * (self.N)
-        # v_seed = min(max(self.current_vel, 0.8), self.v_max)
-        # x0 = []
-        # for k in range(self.N+1):
-        #     s_guess = s_est + k * self.dt * v_seed
-        #     x0 += [x, y, psi, s_guess]
-        # for k in range(self.N):
-        #     x0 += [v_seed, self.last_delta]
-
-        nlp = {'x':z, 'f':cost, 'g':g}
-        solver = nlpsol('solver', 'ipopt', nlp, {
-            'ipopt.print_level': 0,
-            'print_time': 0,
-            'ipopt.tol': 1e-3,
-        })
+        # Sanity check the seed
+        x0 = np.array(x0, dtype=float)
+        if not np.all(np.isfinite(x0)):
+            # Replace any inf/nan with measured state / safe defaults
+            x0 = np.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+            x0[:4] = [float(self.measured_state[0]), float(self.measured_state[1]),
+                    float(self.measured_state[2]), float(self.measured_state[3])]
 
         try:
-            sol = solver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+            kwargs = dict(x0=self.x0_vec, p=self.p_vec, lbx=self.lbx, ubx=self.ubx, lbg=self.lbg, ubg=self.ubg)
+            if self.lam_x is not None and self.lam_g is not None and np.isfinite(self.lam_x).all() and np.isfinite(self.lam_g).all():
+                kwargs['lam_x0'] = self.lam_x
+                kwargs['lam_g0'] = self.lam_g
+            sol = self.solver(**kwargs)
+
+            # sol = self.solver(x0=x0,
+            #       lbx=self.lbx, ubx=self.ubx,
+            #       lbg=self.lbg, ubg=self.ubg,
+            #       p=self.p_vec)
+
             z_opt = sol['x'].full().flatten()
+
+            X_opt = z_opt[:4*(self.N+1)].reshape(self.N+1, 4)
+            U_opt = z_opt[4*(self.N+1):].reshape(self.N, 2)
+
+            self.prev_X = X_opt
+            self.prev_U = U_opt
+
+            if not np.all(np.isfinite(self.prev_X)) or not np.all(np.isfinite(self.prev_U)):
+                self.have_warm = False
+            else:
+                self.have_warm = True
+
+            # self.lam_x = np.array(sol['lam_x']).ravel()
+            # self.lam_g = np.array(sol['lam_g']).ravel()
+
             steer = float(z_opt[4 * (self.N + 1) + 1])
             speed = float(z_opt[4 * (self.N + 1)])
             self.last_delta = steer
@@ -361,7 +548,7 @@ class MPCCNode(Node):
             msg.drive.speed = speed
 
             self.drive_pub.publish(msg)
-            self.get_logger().info(f"Published control: speed={speed}, steer={steer}")
+            # self.get_logger().info(f"Published control: speed={speed}, steer={steer}")
 
         except Exception as e:
             self.get_logger().warn(f"MPC Solver failed: {e}")

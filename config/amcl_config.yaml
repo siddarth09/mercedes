@@ -5,7 +5,7 @@ amcl:
     alpha3: 0.2
     alpha4: 0.2
     alpha5: 0.2
-    base_frame_id: "ego_racecar/base_link"
+    base_frame_id: "base_link"
 
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -38,6 +38,6 @@ amcl:
     z_max: 0.05
     z_rand: 0.5
     z_short: 0.05
-    laser_frame_id: "ego_racecar/laser_model"
+    laser_frame_id: "laser_model"
     scan_topic: scan
     

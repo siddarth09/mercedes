@@ -47,7 +47,7 @@ class MPCTrajectoryTracker(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
         self.map_frame = "map"
-        self.base_frame = "base_link"
+        self.base_frame = "ego_racecar/base_link"
 
         # Velocity from odometry
         self.velocity = 0.0
