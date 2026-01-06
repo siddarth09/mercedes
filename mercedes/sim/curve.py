@@ -155,6 +155,23 @@ def create_smooth_spline(x, y, tolerance=0.1, n_points_check=10, smoothing_facto
         s_fit = s[:-1]
         x_fit = x_param[:-1]
         y_fit = y_param[:-1]
+
+        # Remove the duplicate last point for fitting
+        s_fit = s[:-1]
+        x_fit = x_param[:-1]
+        y_fit = y_param[:-1]
+
+        # --- NEW: enforce periodic endpoint equality required by SciPy ---
+        eps = 1e-12
+        if (abs(x_fit[-1] - x_fit[0]) > eps) or (abs(y_fit[-1] - y_fit[0]) > eps):
+            # snap last sample to the first to satisfy bc_type='periodic' precondition
+            x_fit[-1] = x_fit[0]
+            y_fit[-1] = y_fit[0]
+
+        # optional safety check (helps catch bad arc-length arrays)
+        if not np.all(np.diff(s_fit) > 0):
+            raise ValueError("s_fit must be strictly increasing for periodic spline.")
+
         
         # Create periodic splines using CubicSpline with periodic boundary conditions
         x_spline = CubicSpline(s_fit, x_fit, bc_type='periodic')

@@ -9,6 +9,8 @@ from tf2_ros import TransformException, Buffer, TransformListener
 import tf_transformations
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy
 from casadi import atan, tan
+from rclpy.time import Time
+from rclpy.duration import Duration
 
 class DynamicTrajectoryPublisher(Node):
     def __init__(self):
@@ -24,9 +26,9 @@ class DynamicTrajectoryPublisher(Node):
         self.trajectory_pub = self.create_publisher(Path, "/dynamic_trajectory", qos)
 
         self.declare_parameter('wheelbase', 0.34)
-        self.declare_parameter('horizon_length', 30)
+        self.declare_parameter('horizon_length', 20)
         self.declare_parameter('dt', 0.1)
-        self.declare_parameter('max_speed', 1.0)
+        self.declare_parameter('max_speed', 2.0)
         self.declare_parameter('max_steering_angle', np.pi / 4)
 
         self.L = self.get_parameter('wheelbase').get_parameter_value().double_value
@@ -57,8 +59,20 @@ class DynamicTrajectoryPublisher(Node):
             return
 
         try:
-            now = rclpy.time.Time()
-            transform = self.tf_buffer.lookup_transform("map", "ego_racecar/base_link", now)
+            target = "map"
+            source = "base_link"
+
+            if not self.tf_buffer.can_transform(target, source, Time(),
+                                                timeout=Duration(seconds=0.5)):
+                self.get_logger().warn("TF not ready (map->base_link); retrying…")
+                return
+
+            transform = self.tf_buffer.lookup_transform(target, source, Time(),
+                                                timeout=Duration(seconds=0.5))
+
+
+            # now = rclpy.time.Time()
+            # transform = self.tf_buffer.lookup_transform("map", "base_link", now)
 
             x = transform.transform.translation.x
             y = transform.transform.translation.y

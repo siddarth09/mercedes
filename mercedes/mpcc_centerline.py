@@ -316,7 +316,7 @@ class MPCCNode(Node):
             lbx += [self.v_min, self.delta_min]
             ubx += [self.v_max, self.delta_max]
 
-        x0 = [*self.measured_state[:4]] * (self.N+1) + [0.5, 0.0] * (self.N)
+        z0 = [*self.measured_state[:4]] * (self.N+1) + [0.5, 0.0] * (self.N) # initial guess for all decision variables
 
         nlp = {'x':z, 'f':cost, 'g':g}
         solver = nlpsol('solver', 'ipopt', nlp, {
@@ -326,7 +326,7 @@ class MPCCNode(Node):
         })
 
         try:
-            sol = solver(x0=x0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+            sol = solver(x0=z0, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
             z_opt = sol['x'].full().flatten()
             steer = float(z_opt[4 * (self.N + 1) + 1])
             speed = float(z_opt[4 * (self.N + 1)])

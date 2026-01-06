@@ -56,7 +56,8 @@ class RacelineVisualizer(Node):
         self.pub_centerline.publish(path_msg_centerline)
         self.get_logger().info(f"Published raceline with {len(path_msg_centerline.poses)} poses on '/centerline' (frame_id='{self.frame}').")
 
-        reference_path = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/wp-2025-09-24-15-48-56.csv'
+        # reference_path = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/wp-2025-09-24-15-48-56.csv'
+        reference_path = '/home/deepak/Data/f1tenth/mercedes_ws/src/mercedes/storage/csc433_clean.csv'
         # reference_path = centerline_path
         x, y = load_trajectory(reference_path)
         self.get_logger().info(f"CSV loaded form {reference_path}")
